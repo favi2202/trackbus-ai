@@ -1,4 +1,4 @@
-# TrackBus v0.1.1 architecture
+# TrackBus v0.1.2 architecture
 
 TrackBus deliberately uses a small sequential pipeline. It is easier to reason
 about, test, and calibrate than a distributed system and matches the recorded
@@ -7,6 +7,8 @@ video scope of the first prototype.
 ## Modules
 
 - `config.py` loads YAML into validated dataclasses and applies CLI overrides.
+- `calibration.py` crops an optional detection ROI, translates boxes back to the
+  source frame, and classifies doorway lanes and exclusions.
 - `zones.py` scales normalized polygons and classifies an anchor point.
 - `detector.py` loads YOLO and performs person-only inference at the configured
   image size.
@@ -16,6 +18,8 @@ video scope of the first prototype.
 - `event_logger.py` writes confirmed events and the final summary.
 - `video_processor.py` coordinates frames, accumulates detection/tracking
   diagnostics, and draws the output overlays.
+- `diagnostics.py` observes lane occupancy, gaps, overlaps, possible ID restarts,
+  and merged-box signals without influencing the counter.
 - `main.py` validates CLI input and assembles the components.
 
 ## Counting state machine
@@ -46,6 +50,27 @@ without observations, the maximum simultaneous observations, and unique tracking
 IDs. It also records source dimensions, FPS, confidence, and inference image
 size. These values support repeatable comparisons but are not ground-truth
 precision, recall, or counting-accuracy measurements.
+
+Doorway diagnostics use the configurable box center by default. The counting
+state machine continues to use the box bottom-center and is intentionally
+isolated from diagnostic flags. Exclusions are also evaluated using the
+bottom-center anchor, then filtered before zone observations reach the counter.
+Stationary and source/ROI-edge fields are secondary diagnostic reports only.
+Wide or multi-lane boxes produce a simple possible-merge signal; v0.1.2 does not
+attempt speculative reconstruction of two prior tracks into one later box.
+
+## Camera coordinate flow
+
+Lane and exclusion polygons always use normalized source-frame coordinates. If
+an ROI is enabled, YOLO and ByteTrack receive the stable cropped image. Their
+ROI-local boxes are translated and clipped to source coordinates before all
+downstream processing. A null ROI passes the original frame through unchanged.
+
+Overlapping tiled inference is deferred. Safely combining full, left, and right
+crops requires running detection separately, translating boxes, merging duplicate
+detections, and then feeding one merged set into one ByteTrack instance. The
+current high-level `YOLO.track` path combines detection and tracking and cannot
+accept that merged detection set without a larger tracking-adapter redesign.
 
 ## Coordinate model
 

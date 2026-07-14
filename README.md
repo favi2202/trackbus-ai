@@ -6,10 +6,10 @@ counting people who cross a doorway. It detects people with a pretrained
 Ultralytics YOLO model, assigns short-lived tracking IDs with ByteTrack, and
 confirms movement between configurable OUTSIDE and INSIDE zones.
 
-> **Prototype status:** TrackBus v0.1.1 has not been validated on real Tashkent
+> **Prototype status:** TrackBus v0.1.2 has not been validated on real Tashkent
 > buses and must not be treated as an operational passenger-counting system.
 
-## v0.1.1 scope
+## v0.1.2 scope
 
 This version processes one recorded local video. It:
 
@@ -20,7 +20,7 @@ This version processes one recorded local video. It:
 - keeps counting logic independent from the model so it can be unit-tested.
 
 Door sensors, live cameras, APIs, databases, dashboards, forecasting, maps,
-custom training, and cloud deployment are deliberately outside v0.1.1.
+custom training, and cloud deployment are deliberately outside v0.1.2.
 
 ## Architecture
 
@@ -168,6 +168,43 @@ cost more compute and memory. The TrackBus ByteTrack profile keeps lost IDs for
 predicted detection while the person is absent. At 25 FPS the buffer represents
 about 2.4 seconds; longer retention can increase incorrect associations.
 
+### Camera calibration
+
+All `camera` coordinates in YAML are normalized against the original source
+frame. `camera.detection_roi` accepts `[left, top, right, bottom]`. When it is
+null, TrackBus keeps the original full-frame inference path. When configured,
+only that crop is passed to YOLO; tracked boxes are translated back to source
+coordinates before exclusions, zones, counting, diagnostics, and annotation.
+
+`camera.doorway_lanes` accepts optional `left_lane`, `center_lane`, and
+`right_lane` polygons. Lane diagnostics use the bounding-box `center` by default
+for overhead footage. Set `anchor: bottom_center` to use the counting-style
+anchor instead. This setting never changes the bottom-center anchor used by the
+IN/OUT counter.
+
+`camera.exclusion_polygons` are for known static structures such as a door
+mechanism. A detection is excluded from counting when its bottom-center anchor
+is inside a polygon. TrackBus rejects calibration where an exclusion overlaps a
+configured passenger lane; do not place exclusions over passenger pathways.
+
+Set `camera.debug_calibration_overlay: true` to draw the ROI, lane polygons,
+exclusions, current lane labels, and excluded detections on the annotated video.
+
+Example calibration shape—replace these coordinates for the actual camera:
+
+```yaml
+camera:
+  detection_roi: [0.05, 0.05, 0.95, 0.95]
+  doorway_lanes:
+    anchor: center
+    left_lane: [[0.10, 0.15], [0.35, 0.15], [0.35, 0.90], [0.10, 0.90]]
+    center_lane: [[0.36, 0.15], [0.64, 0.15], [0.64, 0.90], [0.36, 0.90]]
+    right_lane: [[0.65, 0.15], [0.90, 0.15], [0.90, 0.90], [0.65, 0.90]]
+  exclusion_polygons:
+    - [[0.00, 0.00], [0.08, 0.00], [0.08, 0.25], [0.00, 0.25]]
+  debug_calibration_overlay: true
+```
+
 Zone points are normalized `[x, y]` coordinates:
 
 - `[0, 0]` is the top-left of the image;
@@ -195,8 +232,14 @@ produce:
 
 The summary records the source resolution and FPS, resolved model settings,
 per-frame tracked person detections, frames with and without detections, maximum
-simultaneous detections, and the number of unique tracking IDs. These diagnostics
-help compare runs but do not measure recall or prove passenger-count accuracy.
+simultaneous detections, and the number of unique tracking IDs. With doorway
+lanes configured, per-track diagnostics also record lane observations and gaps,
+pairwise overlap, nearby simultaneous crossings, possible ID restarts, wide
+boxes, boxes spanning multiple lanes, likely-static tracks, and secondary
+source/ROI border contact. These signals never change counts or remove
+detections. They help compare runs but do not measure recall or prove
+passenger-count accuracy. Reconstruction of a speculative “two tracks replaced
+by one” sequence is deliberately deferred.
 
 The CSV timestamp is the position in the recorded video, not wall-clock time.
 Actual occupancy is preserved above capacity and marked `OVER CAPACITY`. The
@@ -218,13 +261,13 @@ python -m pip check
 - Results depend strongly on camera angle, lighting, occlusion, and zone setup.
 - ByteTrack IDs can change after long occlusion, which can affect counts.
 - The generic pretrained model is not tuned for crowded overhead bus footage.
-- Starting occupancy must be provided; v0.1.1 has no external source of truth.
+- Starting occupancy must be provided; v0.1.2 has no external source of truth.
 - Recorded-video processing does not react to a physical door opening or closing.
 - Output uses OpenCV's broadly available `mp4v` encoder; codec support varies by OS.
 
 ## Privacy
 
-TrackBus v0.1.1 performs ordinary person detection only. It does **not** implement
+TrackBus v0.1.2 performs ordinary person detection only. It does **not** implement
 face recognition, identity recognition, biometrics, cross-journey
 re-identification, or passenger image crops. It stores count events and an
 annotated version of the input video. Real deployments would still require an

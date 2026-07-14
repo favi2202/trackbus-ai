@@ -15,6 +15,33 @@ tracking:
   minimum_zone_frames: 3
   stale_track_timeout: 90
 
+# All camera-calibration coordinates are normalized against the source frame.
+# Null ROI preserves the original full-frame inference path. Configure lane
+# polygons for the actual doorway before relying on lane diagnostics.
+camera:
+  detection_roi: null
+  doorway_lanes:
+    anchor: center
+    left_lane: null
+    center_lane: null
+    right_lane: null
+  # Use only for known static structures, never passenger pathways.
+  exclusion_polygons: []
+  debug_calibration_overlay: false
+
+diagnostics:
+  nearby_distance_normalized: 0.12
+  heavy_overlap_iou: 0.50
+  id_restart_window_frames: 15
+  id_restart_distance_normalized: 0.08
+  edge_margin_pixels: 2
+  stationary_step_threshold: 0.005
+  likely_static_minimum_frames: 75
+  likely_static_minimum_percentage: 0.90
+  wide_box_aspect_ratio: 0.90
+  wide_box_doorway_ratio: 0.45
+  multi_lane_minimum_box_overlap: 0.05
+
 zones:
   outside:
     - [0.05, 0.05]

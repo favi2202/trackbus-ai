@@ -1,4 +1,4 @@
-"""Command-line entry point for TrackBus v0.1.1."""
+"""Command-line entry point for TrackBus v0.1.2."""
 
 from __future__ import annotations
 
@@ -149,6 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_name=config.model.path,
                 model_confidence=config.model.confidence,
                 inference_image_size=config.model.imgsz,
+                camera_config=config.camera,
+                diagnostics_config=config.diagnostics,
             )
             summary = processor.process(input_path, output_path, show=args.show)
 

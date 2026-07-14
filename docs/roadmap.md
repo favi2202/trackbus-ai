@@ -16,6 +16,18 @@
 - [x] Detection and tracking diagnostics in JSON summaries
 - [x] CPU, GPU, and low-resolution comparison presets
 
+## v0.1.2 — doorway calibration diagnostics
+
+- [x] Optional normalized detection ROI with source-coordinate translation
+- [x] Optional left, center, and right doorway lane polygons
+- [x] Static-structure exclusion polygons and calibration debug overlay
+- [x] Per-lane observations, detection gaps, and simultaneous-track statistics
+- [x] Pairwise IoU, overlap disappearance, and possible ID restart signals
+- [x] Wide-box and multi-lane-box diagnostics without automatic filtering
+- [x] Likely-static reporting and secondary source/ROI-edge statistics
+- [ ] Speculative two-track-to-one-box reconstruction, deferred pending evidence
+- [ ] Overlapping tiled inference, pending a separate detection/tracking adapter
+
 ## Next: field validation
 
 - Collect consented, privacy-reviewed sample footage from representative bus doors.

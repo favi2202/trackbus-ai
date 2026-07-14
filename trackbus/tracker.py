@@ -25,6 +25,13 @@ class TrackedPerson:
         left, _top, right, bottom = self.bounding_box
         return ((left + right) / 2.0, bottom)
 
+    @property
+    def center(self) -> tuple[float, float]:
+        """Bounding-box center used by overhead doorway diagnostics."""
+
+        left, top, right, bottom = self.bounding_box
+        return ((left + right) / 2.0, (top + bottom) / 2.0)
+
 
 class ByteTrackPersonTracker:
     """Convert Ultralytics ByteTrack results into :class:`TrackedPerson` values."""

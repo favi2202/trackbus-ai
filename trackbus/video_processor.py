@@ -6,13 +6,16 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from trackbus.config import ZonesConfig
+from trackbus.calibration import DoorwayLane, FrameCalibration
+from trackbus.config import CameraConfig, DiagnosticsConfig, ZonesConfig
 from trackbus.counter import PassengerCounter
+from trackbus.diagnostics import DoorwayDiagnostics
 from trackbus.event_logger import EventLogger
 from trackbus.tracker import ByteTrackPersonTracker, TrackedPerson
 from trackbus.zones import PixelZones, ZoneMembership
@@ -49,9 +52,16 @@ class ProcessingSummary:
     average_person_detections_per_frame: float
     maximum_person_detections_in_frame: int
     unique_tracking_ids: int
+    detection_roi_enabled: bool
+    detection_roi_normalized: tuple[float, float, float, float] | None
+    excluded_person_detections_total: int
+    doorway_diagnostics: dict[str, Any]
 
-    def to_dict(self) -> dict[str, str | int | float]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        diagnostics = data.pop("doorway_diagnostics")
+        data.update(diagnostics)
+        return data
 
 
 class VideoProcessor:
@@ -67,6 +77,8 @@ class VideoProcessor:
         model_name: str,
         model_confidence: float,
         inference_image_size: int,
+        camera_config: CameraConfig,
+        diagnostics_config: DiagnosticsConfig,
     ) -> None:
         self.tracker = tracker
         self.counter = counter
@@ -75,6 +87,8 @@ class VideoProcessor:
         self.model_name = model_name
         self.model_confidence = model_confidence
         self.inference_image_size = inference_image_size
+        self.camera_config = camera_config
+        self.diagnostics_config = diagnostics_config
 
     def process(
         self, input_path: Path, output_path: Path, *, show: bool = False
@@ -109,11 +123,14 @@ class VideoProcessor:
             raise VideoProcessingError(f"Could not create output video: {output_path}")
 
         zones = PixelZones.from_normalized(self.zones_config, width, height)
+        calibration = FrameCalibration(self.camera_config, width, height)
+        doorway_diagnostics = DoorwayDiagnostics(calibration, self.diagnostics_config)
         processed_frames = 0
         person_detections_total = 0
         frames_with_person_detections = 0
         maximum_person_detections_in_frame = 0
         unique_tracking_ids: set[int] = set()
+        excluded_person_detections_total = 0
         started = time.perf_counter()
         LOGGER.info(
             "Processing %s (%dx%d at %.2f FPS)", input_path, width, height, source_fps
@@ -126,7 +143,16 @@ class VideoProcessor:
                     break
                 frame_number = processed_frames
                 self.counter.remove_stale_tracks(frame_number)
-                people = self.tracker.update(frame)
+                local_people = self.tracker.update(calibration.inference_frame(frame))
+                source_people = calibration.to_source(local_people)
+                excluded_people: list[TrackedPerson] = []
+                people: list[TrackedPerson] = []
+                for person in source_people:
+                    target = (
+                        excluded_people if calibration.is_excluded(person) else people
+                    )
+                    target.append(person)
+                excluded_person_detections_total += len(excluded_people)
                 detections_in_frame = len(people)
                 person_detections_total += detections_in_frame
                 if detections_in_frame:
@@ -135,6 +161,20 @@ class VideoProcessor:
                     maximum_person_detections_in_frame, detections_in_frame
                 )
                 unique_tracking_ids.update(person.tracking_id for person in people)
+                lanes = {
+                    person.tracking_id: calibration.lane_for(person)
+                    for person in people
+                }
+                box_lanes = {
+                    person.tracking_id: calibration.box_lanes(
+                        person,
+                        self.diagnostics_config.multi_lane_minimum_box_overlap,
+                    )
+                    for person in people
+                }
+                doorway_diagnostics.observe_frame(
+                    frame_number, people, lanes, box_lanes
+                )
                 memberships: dict[int, ZoneMembership] = {}
 
                 for person in people:
@@ -144,6 +184,7 @@ class VideoProcessor:
                         person.tracking_id, membership, frame_number
                     )
                     if event is not None:
+                        doorway_diagnostics.record_crossing(event)
                         self.event_logger.log_event(event, source_fps)
                         LOGGER.info(
                             "%s event: track=%d frame=%d occupancy=%d",
@@ -153,13 +194,21 @@ class VideoProcessor:
                             event.current_occupancy,
                         )
 
-                annotated = self._annotate(frame, zones, people, memberships)
+                annotated = self._annotate(
+                    frame,
+                    zones,
+                    people,
+                    memberships,
+                    calibration,
+                    lanes,
+                    excluded_people,
+                )
                 writer.write(annotated)
                 processed_frames += 1
 
                 if show:
                     try:
-                        cv2.imshow("TrackBus v0.1.1 - press q to stop", annotated)
+                        cv2.imshow("TrackBus v0.1.2 - press q to stop", annotated)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             LOGGER.info("Preview stopped by user.")
                             break
@@ -205,6 +254,10 @@ class VideoProcessor:
             ),
             maximum_person_detections_in_frame=maximum_person_detections_in_frame,
             unique_tracking_ids=len(unique_tracking_ids),
+            detection_roi_enabled=calibration.roi.enabled,
+            detection_roi_normalized=self.camera_config.detection_roi,
+            excluded_person_detections_total=excluded_person_detections_total,
+            doorway_diagnostics=doorway_diagnostics.summary(),
         )
         self.event_logger.write_summary(summary.to_dict())
         return summary
@@ -215,6 +268,9 @@ class VideoProcessor:
         zones: PixelZones,
         people: list[TrackedPerson],
         memberships: dict[int, ZoneMembership],
+        calibration: FrameCalibration,
+        lanes: dict[int, DoorwayLane | None],
+        excluded_people: list[TrackedPerson],
     ) -> NDArray[np.uint8]:
         annotated = frame.copy()
         overlay = annotated.copy()
@@ -225,6 +281,9 @@ class VideoProcessor:
         cv2.polylines(annotated, [zones.inside], True, (60, 200, 90), 2)
         _zone_label(annotated, zones.outside, "OUTSIDE", (0, 165, 255))
         _zone_label(annotated, zones.inside, "INSIDE", (60, 200, 90))
+
+        if calibration.config.debug_calibration_overlay:
+            _draw_calibration_overlay(annotated, calibration)
 
         for person in people:
             left, top, right, bottom = (int(value) for value in person.bounding_box)
@@ -239,10 +298,26 @@ class VideoProcessor:
             cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
             state = self.counter.track_state(person.tracking_id)
             state_text = state.value if state is not None else "new"
-            label = f"ID {person.tracking_id} {person.confidence:.2f} {state_text}"
+            lane = lanes[person.tracking_id]
+            lane_text = f" {lane.value}" if lane is not None else ""
+            label = (
+                f"ID {person.tracking_id} {person.confidence:.2f} "
+                f"{state_text}{lane_text}"
+            )
             _text_with_background(annotated, label, (left, max(18, top - 7)), color)
             anchor = tuple(int(value) for value in person.anchor)
             cv2.circle(annotated, anchor, 4, color, -1)
+
+        if calibration.config.debug_calibration_overlay:
+            for person in excluded_people:
+                left, top, right, bottom = (int(value) for value in person.bounding_box)
+                cv2.rectangle(annotated, (left, top), (right, bottom), (40, 40, 230), 2)
+                _text_with_background(
+                    annotated,
+                    f"ID {person.tracking_id} EXCLUDED",
+                    (left, max(18, top - 7)),
+                    (40, 40, 230),
+                )
 
         occupancy = self.counter.current_occupancy
         actual_percentage = self.counter.occupancy_percentage
@@ -260,6 +335,36 @@ class VideoProcessor:
         ]
         _draw_status_panel(annotated, lines, occupancy > self.counter.capacity)
         return annotated
+
+
+def _draw_calibration_overlay(
+    frame: NDArray[np.uint8], calibration: FrameCalibration
+) -> None:
+    if calibration.roi.enabled:
+        roi = calibration.roi
+        cv2.rectangle(
+            frame,
+            (roi.left, roi.top),
+            (roi.right - 1, roi.bottom - 1),
+            (255, 180, 40),
+            2,
+        )
+        _text_with_background(
+            frame, "DETECTION ROI", (roi.left + 5, roi.top + 20), (255, 180, 40)
+        )
+
+    lane_colors = {
+        DoorwayLane.LEFT: (255, 120, 70),
+        DoorwayLane.CENTER: (220, 220, 60),
+        DoorwayLane.RIGHT: (180, 80, 255),
+    }
+    for lane, polygon in calibration.lanes.items():
+        color = lane_colors[lane]
+        cv2.polylines(frame, [polygon], True, color, 2)
+        _zone_label(frame, polygon, lane.value.upper(), color)
+    for index, polygon in enumerate(calibration.exclusions):
+        cv2.polylines(frame, [polygon], True, (40, 40, 230), 2)
+        _zone_label(frame, polygon, f"EXCLUSION {index + 1}", (40, 40, 230))
 
 
 def _zone_label(

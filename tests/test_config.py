@@ -104,3 +104,53 @@ def test_omitted_cli_model_settings_preserve_yaml(tmp_path: Path) -> None:
     assert config.model.path == "yolo11n.pt"
     assert config.model.confidence == 0.4
     assert config.model.imgsz == 512
+
+
+def test_camera_calibration_configuration_loads(tmp_path: Path) -> None:
+    content = (
+        VALID_CONFIG
+        + """
+camera:
+  detection_roi: [0.1, 0.2, 0.9, 0.8]
+  doorway_lanes:
+    anchor: bottom_center
+    left_lane: [[0.1, 0.2], [0.3, 0.2], [0.3, 0.8], [0.1, 0.8]]
+    center_lane: null
+    right_lane: null
+  exclusion_polygons:
+    - [[0.0, 0.0], [0.05, 0.0], [0.05, 0.1], [0.0, 0.1]]
+  debug_calibration_overlay: true
+"""
+    )
+
+    config = load_config(write_config(tmp_path, content))
+
+    assert config.camera.detection_roi == (0.1, 0.2, 0.9, 0.8)
+    assert config.camera.lane_anchor == "bottom_center"
+    assert config.camera.left_lane is not None
+    assert len(config.camera.exclusion_polygons) == 1
+    assert config.camera.debug_calibration_overlay is True
+
+
+@pytest.mark.parametrize(
+    ("camera_yaml", "message"),
+    [
+        ("detection_roi: [0.8, 0.2, 0.1, 0.9]", "left < right"),
+        ("doorway_lanes:\n    anchor: feet", "anchor"),
+        ("debug_calibration_overlay: 1", "true or false"),
+    ],
+)
+def test_invalid_camera_calibration_is_rejected(
+    tmp_path: Path, camera_yaml: str, message: str
+) -> None:
+    content = VALID_CONFIG + f"\ncamera:\n  {camera_yaml}\n"
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(tmp_path, content))
+
+
+def test_invalid_diagnostic_threshold_is_rejected(tmp_path: Path) -> None:
+    content = VALID_CONFIG + "\ndiagnostics:\n  heavy_overlap_iou: -0.1\n"
+
+    with pytest.raises(ConfigError, match="heavy_overlap_iou"):
+        load_config(write_config(tmp_path, content))

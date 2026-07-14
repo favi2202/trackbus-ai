@@ -14,6 +14,8 @@ class ConfigError(ValueError):
 
 
 NormalizedPoint = tuple[float, float]
+NormalizedPolygon = tuple[NormalizedPoint, ...]
+NormalizedRoi = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,32 @@ class TrackingConfig:
     tracker: str = "bytetrack.yaml"
     minimum_zone_frames: int = 3
     stale_track_timeout: int = 90
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    detection_roi: NormalizedRoi | None = None
+    left_lane: NormalizedPolygon | None = None
+    center_lane: NormalizedPolygon | None = None
+    right_lane: NormalizedPolygon | None = None
+    lane_anchor: str = "center"
+    exclusion_polygons: tuple[NormalizedPolygon, ...] = ()
+    debug_calibration_overlay: bool = False
+
+
+@dataclass(frozen=True)
+class DiagnosticsConfig:
+    nearby_distance_normalized: float = 0.12
+    heavy_overlap_iou: float = 0.50
+    id_restart_window_frames: int = 15
+    id_restart_distance_normalized: float = 0.08
+    edge_margin_pixels: int = 2
+    stationary_step_threshold: float = 0.005
+    likely_static_minimum_frames: int = 75
+    likely_static_minimum_percentage: float = 0.90
+    wide_box_aspect_ratio: float = 0.90
+    wide_box_doorway_ratio: float = 0.45
+    multi_lane_minimum_box_overlap: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -51,6 +79,8 @@ class AppConfig:
     tracking: TrackingConfig
     zones: ZonesConfig
     outputs: OutputConfig
+    camera: CameraConfig = CameraConfig()
+    diagnostics: DiagnosticsConfig = DiagnosticsConfig()
     capacity: int = 40
     initial_occupancy: int = 0
     device: str = "auto"
@@ -143,6 +173,42 @@ def _optional_path(value: Any, name: str) -> Path | None:
     return Path(value)
 
 
+def _optional_roi(value: Any, name: str) -> NormalizedRoi | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise ConfigError(f"'{name}' must be [left, top, right, bottom] or null.")
+    try:
+        left, top, right, bottom = (float(coordinate) for coordinate in value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"'{name}' coordinates must be numbers.") from exc
+    if not all(0.0 <= coordinate <= 1.0 for coordinate in (left, top, right, bottom)):
+        raise ConfigError(f"'{name}' coordinates must be normalized from 0.0 to 1.0.")
+    if left >= right or top >= bottom:
+        raise ConfigError(f"'{name}' must have left < right and top < bottom.")
+    return left, top, right, bottom
+
+
+def _optional_polygon(value: Any, name: str) -> NormalizedPolygon | None:
+    return None if value is None else _polygon(value, name)
+
+
+def _polygon_collection(value: Any, name: str) -> tuple[NormalizedPolygon, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError(f"'{name}' must be a list of polygons.")
+    return tuple(
+        _polygon(polygon, f"{name}[{index}]") for index, polygon in enumerate(value)
+    )
+
+
+def _bool(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"'{name}' must be true or false.")
+    return value
+
+
 def load_config(path: Path) -> AppConfig:
     """Load an :class:`AppConfig` from a YAML file."""
 
@@ -158,6 +224,9 @@ def load_config(path: Path) -> AppConfig:
     tracking_raw = _mapping(root.get("tracking", {}), "tracking")
     zones_raw = _mapping(root.get("zones"), "zones")
     outputs_raw = _mapping(root.get("outputs", {}), "outputs")
+    camera_raw = _mapping(root.get("camera", {}), "camera")
+    lanes_raw = _mapping(camera_raw.get("doorway_lanes", {}), "camera.doorway_lanes")
+    diagnostics_raw = _mapping(root.get("diagnostics", {}), "diagnostics")
 
     try:
         config = AppConfig(
@@ -182,6 +251,60 @@ def load_config(path: Path) -> AppConfig:
                 ),
                 summary_json=_optional_path(
                     outputs_raw.get("summary_json"), "outputs.summary_json"
+                ),
+            ),
+            camera=CameraConfig(
+                detection_roi=_optional_roi(
+                    camera_raw.get("detection_roi"), "camera.detection_roi"
+                ),
+                left_lane=_optional_polygon(
+                    lanes_raw.get("left_lane"), "camera.doorway_lanes.left_lane"
+                ),
+                center_lane=_optional_polygon(
+                    lanes_raw.get("center_lane"), "camera.doorway_lanes.center_lane"
+                ),
+                right_lane=_optional_polygon(
+                    lanes_raw.get("right_lane"), "camera.doorway_lanes.right_lane"
+                ),
+                lane_anchor=str(lanes_raw.get("anchor", "center")),
+                exclusion_polygons=_polygon_collection(
+                    camera_raw.get("exclusion_polygons", []),
+                    "camera.exclusion_polygons",
+                ),
+                debug_calibration_overlay=_bool(
+                    camera_raw.get("debug_calibration_overlay", False),
+                    "camera.debug_calibration_overlay",
+                ),
+            ),
+            diagnostics=DiagnosticsConfig(
+                nearby_distance_normalized=float(
+                    diagnostics_raw.get("nearby_distance_normalized", 0.12)
+                ),
+                heavy_overlap_iou=float(diagnostics_raw.get("heavy_overlap_iou", 0.50)),
+                id_restart_window_frames=int(
+                    diagnostics_raw.get("id_restart_window_frames", 15)
+                ),
+                id_restart_distance_normalized=float(
+                    diagnostics_raw.get("id_restart_distance_normalized", 0.08)
+                ),
+                edge_margin_pixels=int(diagnostics_raw.get("edge_margin_pixels", 2)),
+                stationary_step_threshold=float(
+                    diagnostics_raw.get("stationary_step_threshold", 0.005)
+                ),
+                likely_static_minimum_frames=int(
+                    diagnostics_raw.get("likely_static_minimum_frames", 75)
+                ),
+                likely_static_minimum_percentage=float(
+                    diagnostics_raw.get("likely_static_minimum_percentage", 0.90)
+                ),
+                wide_box_aspect_ratio=float(
+                    diagnostics_raw.get("wide_box_aspect_ratio", 0.90)
+                ),
+                wide_box_doorway_ratio=float(
+                    diagnostics_raw.get("wide_box_doorway_ratio", 0.45)
+                ),
+                multi_lane_minimum_box_overlap=float(
+                    diagnostics_raw.get("multi_lane_minimum_box_overlap", 0.05)
                 ),
             ),
             capacity=int(root.get("capacity", 40)),
@@ -211,6 +334,44 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("'tracking.minimum_zone_frames' must be at least 1.")
     if config.tracking.stale_track_timeout < 1:
         raise ConfigError("'tracking.stale_track_timeout' must be at least 1.")
+    if config.camera.lane_anchor not in {"center", "bottom_center"}:
+        raise ConfigError(
+            "'camera.doorway_lanes.anchor' must be center or bottom_center."
+        )
+    diagnostics = config.diagnostics
+    for name, value in (
+        ("heavy_overlap_iou", diagnostics.heavy_overlap_iou),
+        ("nearby_distance_normalized", diagnostics.nearby_distance_normalized),
+        ("id_restart_distance_normalized", diagnostics.id_restart_distance_normalized),
+        ("stationary_step_threshold", diagnostics.stationary_step_threshold),
+        (
+            "likely_static_minimum_percentage",
+            diagnostics.likely_static_minimum_percentage,
+        ),
+        ("wide_box_aspect_ratio", diagnostics.wide_box_aspect_ratio),
+        ("wide_box_doorway_ratio", diagnostics.wide_box_doorway_ratio),
+        ("multi_lane_minimum_box_overlap", diagnostics.multi_lane_minimum_box_overlap),
+    ):
+        if value < 0:
+            raise ConfigError(f"'diagnostics.{name}' cannot be negative.")
+    for name, value in (
+        ("heavy_overlap_iou", diagnostics.heavy_overlap_iou),
+        (
+            "likely_static_minimum_percentage",
+            diagnostics.likely_static_minimum_percentage,
+        ),
+        ("multi_lane_minimum_box_overlap", diagnostics.multi_lane_minimum_box_overlap),
+    ):
+        if value > 1.0:
+            raise ConfigError(f"'diagnostics.{name}' must be at most 1.0.")
+    if diagnostics.id_restart_window_frames < 1:
+        raise ConfigError("'diagnostics.id_restart_window_frames' must be at least 1.")
+    if diagnostics.edge_margin_pixels < 0:
+        raise ConfigError("'diagnostics.edge_margin_pixels' cannot be negative.")
+    if diagnostics.likely_static_minimum_frames < 1:
+        raise ConfigError(
+            "'diagnostics.likely_static_minimum_frames' must be at least 1."
+        )
     if config.capacity < 1:
         raise ConfigError("'capacity' must be at least 1.")
     if config.initial_occupancy < 0:
