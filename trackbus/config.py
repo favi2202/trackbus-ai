@@ -20,6 +20,7 @@ NormalizedPoint = tuple[float, float]
 class ModelConfig:
     path: str = "yolo11n.pt"
     confidence: float = 0.35
+    imgsz: int = 640
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class AppConfig:
         device: str | None = None,
         confidence: float | None = None,
         model: str | None = None,
+        imgsz: int | None = None,
     ) -> AppConfig:
         """Return a validated copy with command-line values applied."""
 
@@ -73,6 +75,7 @@ class AppConfig:
             confidence=(
                 confidence if confidence is not None else self.model.confidence
             ),
+            imgsz=imgsz if imgsz is not None else self.model.imgsz,
         )
         updated_outputs = replace(
             self.outputs,
@@ -161,6 +164,7 @@ def load_config(path: Path) -> AppConfig:
             model=ModelConfig(
                 path=str(model_raw.get("path", "yolo11n.pt")),
                 confidence=float(model_raw.get("confidence", 0.35)),
+                imgsz=int(model_raw.get("imgsz", 640)),
             ),
             tracking=TrackingConfig(
                 tracker=str(tracking_raw.get("tracker", "bytetrack.yaml")),
@@ -199,6 +203,8 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("'model.path' cannot be empty.")
     if not 0.0 < config.model.confidence <= 1.0:
         raise ConfigError("'model.confidence' must be greater than 0 and at most 1.")
+    if config.model.imgsz < 32:
+        raise ConfigError("'model.imgsz' must be at least 32 pixels.")
     if not config.tracking.tracker.strip():
         raise ConfigError("'tracking.tracker' cannot be empty.")
     if config.tracking.minimum_zone_frames < 1:

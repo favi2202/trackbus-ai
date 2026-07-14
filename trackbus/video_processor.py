@@ -27,6 +27,9 @@ class VideoProcessingError(RuntimeError):
 @dataclass(frozen=True)
 class ProcessingSummary:
     input_video: str
+    source_width: int
+    source_height: int
+    source_fps: float
     processed_frames: int
     entered_total: int
     exited_total: int
@@ -37,7 +40,15 @@ class ProcessingSummary:
     processing_time_seconds: float
     average_fps: float
     model_used: str
+    confidence_threshold: float
+    inference_image_size: int
     device_used: str
+    person_detections_total: int
+    frames_with_person_detections: int
+    frames_without_person_detections: int
+    average_person_detections_per_frame: float
+    maximum_person_detections_in_frame: int
+    unique_tracking_ids: int
 
     def to_dict(self) -> dict[str, str | int | float]:
         return asdict(self)
@@ -54,12 +65,16 @@ class VideoProcessor:
         zones_config: ZonesConfig,
         event_logger: EventLogger,
         model_name: str,
+        model_confidence: float,
+        inference_image_size: int,
     ) -> None:
         self.tracker = tracker
         self.counter = counter
         self.zones_config = zones_config
         self.event_logger = event_logger
         self.model_name = model_name
+        self.model_confidence = model_confidence
+        self.inference_image_size = inference_image_size
 
     def process(
         self, input_path: Path, output_path: Path, *, show: bool = False
@@ -95,6 +110,10 @@ class VideoProcessor:
 
         zones = PixelZones.from_normalized(self.zones_config, width, height)
         processed_frames = 0
+        person_detections_total = 0
+        frames_with_person_detections = 0
+        maximum_person_detections_in_frame = 0
+        unique_tracking_ids: set[int] = set()
         started = time.perf_counter()
         LOGGER.info(
             "Processing %s (%dx%d at %.2f FPS)", input_path, width, height, source_fps
@@ -108,6 +127,14 @@ class VideoProcessor:
                 frame_number = processed_frames
                 self.counter.remove_stale_tracks(frame_number)
                 people = self.tracker.update(frame)
+                detections_in_frame = len(people)
+                person_detections_total += detections_in_frame
+                if detections_in_frame:
+                    frames_with_person_detections += 1
+                maximum_person_detections_in_frame = max(
+                    maximum_person_detections_in_frame, detections_in_frame
+                )
+                unique_tracking_ids.update(person.tracking_id for person in people)
                 memberships: dict[int, ZoneMembership] = {}
 
                 for person in people:
@@ -132,7 +159,7 @@ class VideoProcessor:
 
                 if show:
                     try:
-                        cv2.imshow("TrackBus v0.1 - press q to stop", annotated)
+                        cv2.imshow("TrackBus v0.1.1 - press q to stop", annotated)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             LOGGER.info("Preview stopped by user.")
                             break
@@ -150,6 +177,9 @@ class VideoProcessor:
         elapsed = time.perf_counter() - started
         summary = ProcessingSummary(
             input_video=str(input_path),
+            source_width=width,
+            source_height=height,
+            source_fps=round(source_fps, 3),
             processed_frames=processed_frames,
             entered_total=self.counter.entered_total,
             exited_total=self.counter.exited_total,
@@ -160,7 +190,21 @@ class VideoProcessor:
             processing_time_seconds=round(elapsed, 3),
             average_fps=round(processed_frames / elapsed, 2) if elapsed else 0.0,
             model_used=self.model_name,
+            confidence_threshold=self.model_confidence,
+            inference_image_size=self.inference_image_size,
             device_used=self.tracker.device_label,
+            person_detections_total=person_detections_total,
+            frames_with_person_detections=frames_with_person_detections,
+            frames_without_person_detections=(
+                processed_frames - frames_with_person_detections
+            ),
+            average_person_detections_per_frame=(
+                round(person_detections_total / processed_frames, 3)
+                if processed_frames
+                else 0.0
+            ),
+            maximum_person_detections_in_frame=maximum_person_detections_in_frame,
+            unique_tracking_ids=len(unique_tracking_ids),
         )
         self.event_logger.write_summary(summary.to_dict())
         return summary

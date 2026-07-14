@@ -62,6 +62,8 @@ def test_video_pipeline_writes_all_artifacts(tmp_path: Path) -> None:
             zones_config=zones,
             event_logger=event_logger,
             model_name="test-model",
+            model_confidence=0.2,
+            inference_image_size=960,
         )
         summary = processor.process(input_path, output_path)
 
@@ -75,3 +77,11 @@ def test_video_pipeline_writes_all_artifacts(tmp_path: Path) -> None:
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["final_occupancy"] == 1
     assert saved_summary["device_used"] == "test"
+    assert saved_summary["confidence_threshold"] == 0.2
+    assert saved_summary["inference_image_size"] == 960
+    assert saved_summary["person_detections_total"] == 3
+    assert saved_summary["frames_with_person_detections"] == 3
+    assert saved_summary["frames_without_person_detections"] == 0
+    assert saved_summary["average_person_detections_per_frame"] == 1.0
+    assert saved_summary["maximum_person_detections_in_frame"] == 1
+    assert saved_summary["unique_tracking_ids"] == 1

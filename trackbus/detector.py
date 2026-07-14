@@ -54,11 +54,14 @@ class PersonDetector:
 
     PERSON_CLASS_ID = 0
 
-    def __init__(self, model_path: str, confidence: float) -> None:
+    def __init__(self, model_path: str, confidence: float, image_size: int) -> None:
         if not 0.0 < confidence <= 1.0:
             raise ValueError("confidence must be greater than 0 and at most 1")
+        if image_size < 32:
+            raise ValueError("image_size must be at least 32 pixels")
         self.model_path = model_path
         self.confidence = confidence
+        self.image_size = image_size
         try:
             from ultralytics import YOLO
 
@@ -84,6 +87,7 @@ class PersonDetector:
                 tracker=tracker,
                 classes=[self.PERSON_CLASS_ID],
                 conf=self.confidence,
+                imgsz=self.image_size,
                 device=device,
                 verbose=False,
             )

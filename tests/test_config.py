@@ -3,11 +3,13 @@ from pathlib import Path
 import pytest
 
 from trackbus.config import ConfigError, load_config
+from trackbus.main import _load_runtime_config, build_parser
 
 VALID_CONFIG = """
 model:
   path: yolo11n.pt
   confidence: 0.4
+  imgsz: 512
 tracking:
   minimum_zone_frames: 2
   stale_track_timeout: 30
@@ -32,6 +34,7 @@ def test_valid_configuration_loads(tmp_path: Path) -> None:
 
     assert config.capacity == 40
     assert config.model.confidence == 0.4
+    assert config.model.imgsz == 512
     assert config.zones.outside[2] == (1.0, 0.4)
 
 
@@ -40,6 +43,7 @@ def test_valid_configuration_loads(tmp_path: Path) -> None:
     [
         ("capacity: 40", "capacity: 0", "capacity"),
         ("confidence: 0.4", "confidence: 1.5", "confidence"),
+        ("imgsz: 512", "imgsz: 16", "imgsz"),
         ("initial_occupancy: 0", "initial_occupancy: -1", "initial_occupancy"),
         ("stale_track_timeout: 30", "stale_track_timeout: 0", "stale"),
     ],
@@ -63,3 +67,40 @@ def test_out_of_range_normalized_coordinate_is_rejected(tmp_path: Path) -> None:
 def test_missing_configuration_has_clear_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="does not exist"):
         load_config(tmp_path / "missing.yaml")
+
+
+def test_cli_model_settings_override_yaml(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    args = build_parser().parse_args(
+        [
+            "--input",
+            "input.mp4",
+            "--config",
+            str(config_path),
+            "--model",
+            "yolo11s.pt",
+            "--confidence",
+            "0.2",
+            "--imgsz",
+            "960",
+        ]
+    )
+
+    config = _load_runtime_config(args)
+
+    assert config.model.path == "yolo11s.pt"
+    assert config.model.confidence == 0.2
+    assert config.model.imgsz == 960
+
+
+def test_omitted_cli_model_settings_preserve_yaml(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    args = build_parser().parse_args(
+        ["--input", "input.mp4", "--config", str(config_path)]
+    )
+
+    config = _load_runtime_config(args)
+
+    assert config.model.path == "yolo11n.pt"
+    assert config.model.confidence == 0.4
+    assert config.model.imgsz == 512

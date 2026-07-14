@@ -1,4 +1,4 @@
-# TrackBus v0.1 architecture
+# TrackBus v0.1.1 architecture
 
 TrackBus deliberately uses a small sequential pipeline. It is easier to reason
 about, test, and calibrate than a distributed system and matches the recorded
@@ -8,12 +8,14 @@ video scope of the first prototype.
 
 - `config.py` loads YAML into validated dataclasses and applies CLI overrides.
 - `zones.py` scales normalized polygons and classifies an anchor point.
-- `detector.py` loads YOLO and performs person-only inference.
+- `detector.py` loads YOLO and performs person-only inference at the configured
+  image size.
 - `tracker.py` enables Ultralytics' supported ByteTrack integration and converts
   results into `TrackedPerson` records.
 - `counter.py` owns the model-independent per-ID transition state machine.
 - `event_logger.py` writes confirmed events and the final summary.
-- `video_processor.py` coordinates frames and draws the output overlays.
+- `video_processor.py` coordinates frames, accumulates detection/tracking
+  diagnostics, and draws the output overlays.
 - `main.py` validates CLI input and assembles the components.
 
 ## Counting state machine
@@ -31,6 +33,19 @@ incomplete movement.
 
 State is removed after `stale_track_timeout` unobserved frames. This bounds memory
 and reduces the damage from a tracker ID eventually being reused.
+
+The TrackBus ByteTrack profile retains lost tracks for 60 frames. It can restore
+an ID when a matching detection returns after a brief miss, while the counter's
+longer 90-frame default keeps movement state available. Lost tracks do not
+produce synthetic bounding boxes or zone observations.
+
+## Run diagnostics
+
+The JSON summary records tracked person observations per frame, frames with and
+without observations, the maximum simultaneous observations, and unique tracking
+IDs. It also records source dimensions, FPS, confidence, and inference image
+size. These values support repeatable comparisons but are not ground-truth
+precision, recall, or counting-accuracy measurements.
 
 ## Coordinate model
 

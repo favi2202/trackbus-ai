@@ -3,6 +3,7 @@
 model:
   path: yolo11n.pt
   confidence: 0.35
+  imgsz: 640
 
 device: auto
 capacity: 40
@@ -10,7 +11,7 @@ initial_occupancy: 0
 logging_level: INFO
 
 tracking:
-  tracker: bytetrack.yaml
+  tracker: configs/bytetrack_trackbus.yaml
   minimum_zone_frames: 3
   stale_track_timeout: 90
 

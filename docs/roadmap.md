@@ -8,6 +8,14 @@
 - [x] Annotated video, CSV events, and JSON summary
 - [x] Model-independent unit tests and setup documentation
 
+## v0.1.1 — low-resolution diagnostics and tuning
+
+- [x] Configurable YOLO inference image size
+- [x] CLI precedence tests for model, confidence, and image size
+- [x] ByteTrack profile for short detection misses
+- [x] Detection and tracking diagnostics in JSON summaries
+- [x] CPU, GPU, and low-resolution comparison presets
+
 ## Next: field validation
 
 - Collect consented, privacy-reviewed sample footage from representative bus doors.

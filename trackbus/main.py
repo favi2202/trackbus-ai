@@ -1,4 +1,4 @@
-"""Command-line entry point for TrackBus v0.1."""
+"""Command-line entry point for TrackBus v0.1.1."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from trackbus.config import ConfigError, load_config
+from trackbus.config import AppConfig, ConfigError, load_config
 from trackbus.counter import PassengerCounter
 from trackbus.detector import DetectorError, PersonDetector, resolve_device
 from trackbus.event_logger import EventLogger, derive_artifact_paths
@@ -40,6 +40,13 @@ def _confidence(value: str) -> float:
     return parsed
 
 
+def _image_size(value: str) -> int:
+    parsed = int(value)
+    if parsed < 32:
+        raise argparse.ArgumentTypeError("must be at least 32 pixels")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m trackbus.main",
@@ -53,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inference device: auto, cpu, cuda, cuda:N, or a GPU index",
     )
     parser.add_argument("--confidence", type=_confidence, help="YOLO threshold (0, 1]")
+    parser.add_argument(
+        "--imgsz",
+        type=_image_size,
+        help="YOLO inference image size in pixels (minimum 32)",
+    )
     parser.add_argument("--model", help="Ultralytics model name or local weights path")
     parser.add_argument(
         "--config", type=Path, default=DEFAULT_CONFIG, help="YAML configuration file"
@@ -68,19 +80,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_runtime_config(args: argparse.Namespace) -> AppConfig:
+    """Load YAML and apply command-line values with CLI precedence."""
+
+    return load_config(args.config).with_overrides(
+        output=args.output,
+        capacity=args.capacity,
+        initial_occupancy=args.initial_occupancy,
+        device=args.device,
+        confidence=args.confidence,
+        model=args.model,
+        imgsz=args.imgsz,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
-        config = load_config(args.config).with_overrides(
-            output=args.output,
-            capacity=args.capacity,
-            initial_occupancy=args.initial_occupancy,
-            device=args.device,
-            confidence=args.confidence,
-            model=args.model,
-        )
+        config = _load_runtime_config(args)
         logging.basicConfig(
             level=getattr(logging, config.logging_level),
             format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -96,8 +115,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         device, device_label = resolve_device(config.device)
-        LOGGER.info("Loading model %s on %s", config.model.path, device_label)
-        detector = PersonDetector(config.model.path, config.model.confidence)
+        LOGGER.info(
+            "Loading model %s on %s (confidence=%.3f, imgsz=%d)",
+            config.model.path,
+            device_label,
+            config.model.confidence,
+            config.model.imgsz,
+        )
+        detector = PersonDetector(
+            config.model.path, config.model.confidence, config.model.imgsz
+        )
         tracker = ByteTrackPersonTracker(
             detector,
             tracker_config=config.tracking.tracker,
@@ -120,6 +147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 zones_config=config.zones,
                 event_logger=event_logger,
                 model_name=config.model.path,
+                model_confidence=config.model.confidence,
+                inference_image_size=config.model.imgsz,
             )
             summary = processor.process(input_path, output_path, show=args.show)
 
