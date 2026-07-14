@@ -1,0 +1,33 @@
+# Coordinates are normalized: [0, 0] is the top-left and [1, 1] is the
+# bottom-right of any video resolution. Adjust these polygons for the camera.
+model:
+  path: yolo11n.pt
+  confidence: 0.35
+
+device: auto
+capacity: 40
+initial_occupancy: 0
+logging_level: INFO
+
+tracking:
+  tracker: bytetrack.yaml
+  minimum_zone_frames: 3
+  stale_track_timeout: 90
+
+zones:
+  outside:
+    - [0.05, 0.05]
+    - [0.95, 0.05]
+    - [0.95, 0.40]
+    - [0.05, 0.40]
+  inside:
+    - [0.05, 0.60]
+    - [0.95, 0.60]
+    - [0.95, 0.95]
+    - [0.05, 0.95]
+
+outputs:
+  video: data/output/result.mp4
+  # Null paths are derived from the output video name.
+  events_csv: null
+  summary_json: null

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trackbus-ai"
+version = "0.1.0"
+description = "Two-zone passenger counting prototype for public buses"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    "opencv-python>=4.10,<5",
+    "PyYAML>=6,<7",
+    "ultralytics>=8.3,<9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2,<9",
+    "ruff>=0.6,<1",
+]
+
+[project.scripts]
+trackbus = "trackbus.main:main"
+
+[tool.setuptools.packages.find]
+include = ["trackbus*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
