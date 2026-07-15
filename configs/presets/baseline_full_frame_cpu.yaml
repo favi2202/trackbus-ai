@@ -1,0 +1,19 @@
+# v0.1.2-equivalent model settings through the v0.2 explicit pipeline.
+model: {path: yolo11n.pt, confidence: 0.35, imgsz: 640, half: false}
+device: cpu
+tracking:
+  tracker: configs/bytetrack_trackbus.yaml
+  minimum_zone_frames: 3
+  stale_track_timeout: 90
+camera:
+  inference_views:
+    - {name: full, bounds: [0.0, 0.0, 1.0, 1.0], enabled: true}
+detection_fusion:
+  method: nms
+  iou_threshold: 0.50
+  confidence_strategy: maximum
+  prefer_full_frame: false
+zones:
+  outside: [[0.05, 0.05], [0.95, 0.05], [0.95, 0.40], [0.05, 0.40]]
+  inside: [[0.05, 0.60], [0.95, 0.60], [0.95, 0.95], [0.05, 0.95]]
+outputs: {video: data/output/baseline_full_frame_cpu.mp4}

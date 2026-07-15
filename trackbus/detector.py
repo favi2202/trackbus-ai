@@ -1,11 +1,17 @@
-"""Ultralytics YOLO model loading and person inference."""
+"""Ultralytics prediction backend with no persistent tracker state."""
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+from trackbus.detection import Detection
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DetectorError(RuntimeError):
@@ -49,19 +55,40 @@ def resolve_device(requested: str) -> tuple[str | int, str]:
     )
 
 
-class PersonDetector:
-    """Own a pretrained YOLO model and run person-only tracked inference."""
+class UltralyticsDetector:
+    """Run person-only ``YOLO.predict`` and return untracked detections."""
 
     PERSON_CLASS_ID = 0
 
-    def __init__(self, model_path: str, confidence: float, image_size: int) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        confidence: float,
+        image_size: int,
+        *,
+        device: str | int,
+        device_label: str,
+        half: bool = False,
+    ) -> None:
         if not 0.0 < confidence <= 1.0:
             raise ValueError("confidence must be greater than 0 and at most 1")
         if image_size < 32:
             raise ValueError("image_size must be at least 32 pixels")
+        if "://" in model_path:
+            raise DetectorError(
+                "Remote model URIs are not accepted. Use standard Ultralytics weights "
+                "or a trusted local model file."
+            )
         self.model_path = model_path
         self.confidence = confidence
         self.image_size = image_size
+        self.device = device
+        self.device_label = device_label
+        self.half = bool(half and device_label.startswith("cuda"))
+        if half and not self.half:
+            LOGGER.warning(
+                "Half precision was requested but is disabled on %s.", device_label
+            )
         try:
             from ultralytics import YOLO
 
@@ -71,6 +98,64 @@ class PersonDetector:
                 f"Could not load YOLO model '{model_path}': {exc}"
             ) from exc
 
+    def detect(self, image: NDArray[np.uint8], *, source_view: str) -> list[Detection]:
+        """Return class-0 predictions before any tracking."""
+
+        prediction_options: dict[str, Any] = {
+            "source": image,
+            "classes": [self.PERSON_CLASS_ID],
+            "conf": self.confidence,
+            "imgsz": self.image_size,
+            "device": self.device,
+            "verbose": False,
+        }
+        # Ultralytics 8.4 warns if the deprecated false value is passed on every
+        # frame. Only send the option when FP16 was safely enabled on CUDA.
+        if self.half:
+            prediction_options["half"] = True
+        try:
+            results = self._model.predict(**prediction_options)
+        except Exception as exc:
+            raise DetectorError(f"YOLO prediction failed: {exc}") from exc
+        if not results:
+            raise DetectorError("YOLO returned no result object for an inference view.")
+        boxes = results[0].boxes
+        if boxes is None or len(boxes) == 0:
+            return []
+        coordinates = boxes.xyxy.detach().cpu().tolist()
+        confidences = boxes.conf.detach().cpu().tolist()
+        classes = boxes.cls.detach().cpu().tolist()
+        return [
+            Detection(
+                bounding_box=tuple(float(value) for value in coordinate),
+                confidence=float(confidence),
+                class_id=int(class_id),
+                source_view=source_view,
+                metadata={"coordinate_space": "view"},
+            )
+            for coordinate, confidence, class_id in zip(
+                coordinates, confidences, classes, strict=True
+            )
+        ]
+
+
+class PersonDetector(UltralyticsDetector):
+    """Backward-compatible name; production uses the prediction-only API.
+
+    ``infer_with_tracking`` remains solely so v0.1.2 adapter tests and external
+    callers receive an explicit deprecated path. TrackBus v0.2 never invokes it
+    and never falls back to it when the explicit ByteTrack adapter fails.
+    """
+
+    def __init__(self, model_path: str, confidence: float, image_size: int) -> None:
+        super().__init__(
+            model_path,
+            confidence,
+            image_size,
+            device="cpu",
+            device_label="cpu",
+        )
+
     def infer_with_tracking(
         self,
         frame: NDArray[np.uint8],
@@ -78,7 +163,7 @@ class PersonDetector:
         tracker: str,
         device: str | int,
     ) -> Any:
-        """Run YOLO person detection and Ultralytics' ByteTrack integration."""
+        """Invoke the old combined API only when explicitly called by a client."""
 
         try:
             results = self._model.track(
@@ -96,3 +181,9 @@ class PersonDetector:
         if not results:
             raise DetectorError("YOLO returned no result object for a video frame.")
         return results[0]
+
+
+def is_local_model(model_path: str) -> bool:
+    """Return whether a configured model resolves to an existing local file."""
+
+    return Path(model_path).expanduser().is_file()

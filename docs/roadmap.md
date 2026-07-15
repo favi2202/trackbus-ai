@@ -1,49 +1,84 @@
 # TrackBus roadmap
 
-## v0.1 — recorded-video prototype
+The roadmap is evidence-first: improve and measure the doorway counter before
+building operational integrations around it.
+
+## v0.1 - recorded-video prototype
 
 - [x] Pretrained person detection
-- [x] ByteTrack integration and temporary IDs
+- [x] ByteTrack temporary IDs
 - [x] Configurable two-zone transition counting
 - [x] Annotated video, CSV events, and JSON summary
-- [x] Model-independent unit tests and setup documentation
+- [x] Model-independent counter tests
 
-## v0.1.1 — low-resolution diagnostics and tuning
+## v0.1.1 - low-resolution diagnostics
 
-- [x] Configurable YOLO inference image size
-- [x] CLI precedence tests for model, confidence, and image size
-- [x] ByteTrack profile for short detection misses
-- [x] Detection and tracking diagnostics in JSON summaries
-- [x] CPU, GPU, and low-resolution comparison presets
+- [x] Configurable inference image size
+- [x] CLI precedence for model, confidence, and image size
+- [x] ByteTrack profile for short detection gaps
+- [x] Frame and tracking statistics in JSON summaries
+- [x] CPU/GPU comparison guidance
 
-## v0.1.2 — doorway calibration diagnostics
+## v0.1.2 - doorway calibration diagnostics
 
-- [x] Optional normalized detection ROI with source-coordinate translation
-- [x] Optional left, center, and right doorway lane polygons
-- [x] Static-structure exclusion polygons and calibration debug overlay
-- [x] Per-lane observations, detection gaps, and simultaneous-track statistics
-- [x] Pairwise IoU, overlap disappearance, and possible ID restart signals
-- [x] Wide-box and multi-lane-box diagnostics without automatic filtering
-- [x] Likely-static reporting and secondary source/ROI-edge statistics
-- [ ] Speculative two-track-to-one-box reconstruction, deferred pending evidence
-- [ ] Overlapping tiled inference, pending a separate detection/tracking adapter
+- [x] Optional normalized single detection ROI
+- [x] Source-coordinate translation and clipping
+- [x] Optional left, center, and right doorway lanes
+- [x] Known static-structure exclusion polygons
+- [x] Calibration overlay and excluded-box drawing
+- [x] Gap, overlap, boundary, restart, wide-box, multi-lane, and likely-static
+  diagnostics without speculative counting
 
-## Next: field validation
+## v0.2 - explicit multi-view detection and evaluation
 
-- Collect consented, privacy-reviewed sample footage from representative bus doors.
-- Define an annotation protocol and measure precision, recall, and counting error.
-- Calibrate zones, confirmation time, confidence, and tracker settings.
-- Test crowds, occlusion, bags, children, lighting changes, and camera vibration.
-- Decide acceptable accuracy and operational failure behavior.
+- [x] Separate person-only `YOLO.predict` from tracking
+- [x] Model-independent detection/tracking records and backend protocols
+- [x] Named normalized inference views with source-coordinate translation
+- [x] Exclusion filtering before fusion and tracking
+- [x] Class-aware NMS with view provenance and suppression metadata
+- [x] One version-isolated ByteTrack adapter updated once per source frame
+- [x] Empty-frame tracker updates with no fallback to `YOLO.track`
+- [x] Backward-compatible full-frame default and explicit legacy ROI warnings
+- [x] Warnings for insufficient sole-view zone coverage and unsafe exclusions
+- [x] Optional raw, fused, and tracked diagnostic CSV exports
+- [x] Multi-view/source/fusion/trajectory visual debugging
+- [x] Resumable manual IN/OUT event annotation
+- [x] Direction-aware, one-to-one event evaluation
+- [x] Clearly labelled aggregate-only count evaluation
+- [x] Bounded reproducible experiment matrices and ranked leaderboard artifacts
+- [x] Five ordinary YAML comparison presets
+- [x] Complete and publish the limited test-video benchmark interpretation in
+  the v0.2 experiment report
 
-## Later versions
+The benchmark item must compare detector coverage, event counts, false-event and
+fragmentation indicators, and FPS. Matching `6 IN / 2 OUT` is not sufficient to
+declare a winner. Event F1 requires manually labelled event frames.
 
-- Start and stop processing from a real door-state signal.
-- Support live camera input and robust service supervision.
-- Evaluate a bus-specific model only if field measurements justify training.
-- Add privacy retention controls and operational monitoring.
-- Design backend or passenger-facing integrations only after the counter is proven.
+## Next - representative validation and detector evidence
 
-This roadmap intentionally defers APIs, databases, dashboards, cloud deployment,
-maps, forecasting, CAN-bus work, and mobile applications until the core counting
-assumptions have been validated.
+- Collect consented, privacy-reviewed videos from representative bus doors.
+- Define a consistent annotation protocol for completed crossing frames.
+- Measure direction-aware event precision, recall, F1, timing error, absolute
+  count error per door cycle, ID fragmentation, and processing speed.
+- Stratify evaluation by camera, crowding, occlusion, bags, children, lighting,
+  vibration, door geometry, and simultaneous crossings.
+- Calibrate views, zones, exclusions, tracker settings, and fusion thresholds on
+  training/calibration footage, then evaluate on held-out buses and journeys.
+- Establish acceptable failure behavior and operational accuracy requirements.
+
+If representative evidence confirms that generic person detection is the main
+bottleneck, build a properly licensed, privacy-reviewed dataset and evaluate a
+custom overhead-head or overhead-person detector. Keep the conservative counter
+unchanged while testing whether detector recall and separation improve.
+
+## Later, only after the counter is validated
+
+- Gate processing with a reliable physical door-state signal.
+- Support live camera ingestion and robust local service supervision.
+- Add explicit privacy retention, deletion, access-control, and audit policies.
+- Define operational monitoring for camera obstruction, drift, and degraded
+  confidence.
+
+Backends, databases, web dashboards, cloud deployment, passenger-facing apps,
+maps, forecasting, Yandex integration, and CAN-bus integration remain deferred.
+They do not solve the current detector, tracking, or ground-truth limitations.

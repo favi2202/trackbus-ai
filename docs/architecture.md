@@ -1,87 +1,228 @@
-# TrackBus v0.1.2 architecture
+# TrackBus v0.2 architecture
 
-TrackBus deliberately uses a small sequential pipeline. It is easier to reason
-about, test, and calibrate than a distributed system and matches the recorded
-video scope of the first prototype.
+TrackBus v0.2 is a sequential, source-frame pipeline. It separates prediction
+from tracking so several overlapping detector inputs can contribute to one
+coherent tracking timeline. The design remains intentionally local and small:
+there is no service, database, identity system, or distributed processing layer.
 
-## Modules
+## Processing flow
 
-- `config.py` loads YAML into validated dataclasses and applies CLI overrides.
-- `calibration.py` crops an optional detection ROI, translates boxes back to the
-  source frame, and classifies doorway lanes and exclusions.
-- `zones.py` scales normalized polygons and classifies an anchor point.
-- `detector.py` loads YOLO and performs person-only inference at the configured
-  image size.
-- `tracker.py` enables Ultralytics' supported ByteTrack integration and converts
-  results into `TrackedPerson` records.
+```text
+decoded source frame
+  |
+  +-> enabled inference view 1 -> YOLO.predict person detections --+
+  +-> enabled inference view 2 -> YOLO.predict person detections --+ (optional)
+  +-> enabled inference view N -> YOLO.predict person detections --+
+                                                                   |
+                         translate and clip every xyxy box <---------+
+                                      |
+                        source-coordinate raw detections
+                                      |
+                 bottom-center exclusion-polygon filtering
+                                      |
+                         class-aware greedy NMS fusion
+                                      |
+                          one fused detection set
+                                      |
+               one BYTETracker.update call for this source frame
+                                      |
+                  temporary IDs and tracked source-coordinate boxes
+                                      |
+       zones + lanes + conservative counter + diagnostics + annotation
+```
+
+The same tracker update happens with an empty `N x 6` detection input when no
+view finds a person. Thus every decoded source frame advances exactly one
+ByteTrack instance exactly once. There is never a tracker per view.
+
+## Model-independent records and interfaces
+
+`Detection` represents one untracked prediction with an `xyxy` box, confidence,
+class ID, source-view name, contributing views, and optional metadata.
+`TrackedDetection` adds a temporary tracking ID while retaining confidence,
+class, box, view provenance, and metadata. Both expose center and bottom-center
+anchors.
+
+Three small protocols separate responsibilities:
+
+- `DetectorBackend.detect(image, source_view=...)` returns untracked detections;
+- `DetectionFusion.fuse(detections)` merges source-coordinate predictions;
+- `TrackerBackend.update(detections, frame)` advances one tracker.
+
+The video processor depends on these protocols, so unit tests use fake backends
+without loading a model, downloading weights, or importing a real tracker.
+
+## Module responsibilities
+
+- `config.py` loads validated YAML dataclasses, applies CLI overrides, resolves
+  default or legacy views, and emits calibration/migration warnings.
+- `detection.py` defines model-independent `Detection`, `TrackedDetection`, and
+  bounding-box types.
+- `interfaces.py` defines the detector, fusion, and tracker protocols.
+- `detector.py` wraps person-only `YOLO.predict`, device selection, confidence,
+  image size, trusted model input, and safe CUDA-only half precision.
+- `views.py` resolves normalized views into pixel crops, invokes the detector for
+  each enabled view, translates boxes, and clips them to source boundaries.
+- `calibration.py` resolves source-coordinate lanes and exclusions and tests the
+  configured anchor against known static polygons.
+- `fusion.py` implements class-aware greedy NMS and preserves contributing-view
+  and suppression metadata.
+- `tracker.py` isolates the version-sensitive Ultralytics `BYTETracker` API and
+  converts fused detections into tracked records.
+- `zones.py` scales normalized counting polygons and classifies anchors.
 - `counter.py` owns the model-independent per-ID transition state machine.
-- `event_logger.py` writes confirmed events and the final summary.
-- `video_processor.py` coordinates frames, accumulates detection/tracking
-  diagnostics, and draws the output overlays.
-- `diagnostics.py` observes lane occupancy, gaps, overlaps, possible ID restarts,
-  and merged-box signals without influencing the counter.
-- `main.py` validates CLI input and assembles the components.
+- `diagnostics.py` observes gaps, overlaps, lanes, border contact, likely-static
+  behavior, large boxes, and possible ID restarts without changing counts.
+- `detection_export.py` optionally streams raw, fused, and tracked frame-level
+  CSV diagnostics.
+- `event_logger.py` streams confirmed crossing events and writes the run summary.
+- `video_processor.py` decodes frames, executes stages in their required order,
+  annotates the unchanged source frame, and encodes output.
+- `annotate_events.py` provides human-authored, resumable event labels.
+- `evaluation.py` performs direction-aware one-to-one event matching or clearly
+  limited aggregate-only evaluation.
+- `experiments.py` resolves bounded YAML matrices, runs the public processing
+  command, and writes ranked comparison artifacts.
+- `main.py` validates CLI input and assembles the production components.
+
+## Detector boundary
+
+`UltralyticsDetector` uses `YOLO.predict`, not a persistent Ultralytics tracker.
+Each call requests class `0` only and preserves the confidence and class values
+returned by the model. Empty `boxes` results become an empty list. Standard
+Ultralytics weight names and trusted local paths are supported; explicit HTTP or
+HTTPS model URLs are rejected.
+
+Device resolution accepts CPU, CUDA, a CUDA index, or automatic selection. FP16
+is passed to Ultralytics only when it was requested and the selected device is
+CUDA. It is disabled with a warning on CPU.
+
+## Coordinate flow and views
+
+An inference view stores normalized `[left, top, right, bottom]` bounds. Runtime
+pixel bounds use floor for left/top and ceiling for right/bottom so fractional
+edges retain coverage. Full-frame input is passed through; other views are
+cropped from the original decoded frame.
+
+Detector boxes are initially view-local. The view origin is added to every box,
+then coordinates are clipped to `[0, width - 1] x [0, height - 1]`. From that
+point onward, exclusions, NMS, ByteTrack, zones, lanes, diagnostics, trajectories,
+and annotation all use source coordinates. The output video is never cropped.
+
+If neither `camera.inference_views` nor the deprecated `camera.detection_roi` is
+configured, the resolver creates one enabled `full` view. A legacy ROI becomes
+one `legacy_detection_roi` view with a warning. Mixing the two configuration
+styles is an error rather than an ambiguous reinterpretation.
+
+## Exclusion filtering
+
+Exclusions represent known static camera or door structure. Each translated raw
+detection's bottom-center anchor is tested against every exclusion polygon. An
+excluded detection remains available to raw diagnostic export and debug drawing,
+but it never reaches fusion or ByteTrack:
+
+```text
+translated raw -> classify excluded -> fuse included only -> track
+```
+
+TrackBus does not infer static exclusions. Likely-static behavior remains a
+diagnostic signal. Configuration loading warns when an exclusion overlaps a
+counting zone or configured passenger lane because such a polygon can erase real
+passenger paths. Runtime pixel calibration rejects configured lane overlap as a
+stronger safeguard.
+
+## Detection fusion
+
+`NmsDetectionFusion` groups detections by class and applies conservative greedy
+source-space NMS across inference views. With the default
+`confidence_strategy: maximum`, the highest-confidence box normally wins and a
+candidate from another view whose IoU is at least the configured positive
+threshold can be suppressed. A second NMS pass is never applied within one YOLO
+view, at most one candidate per view joins a group, and different classes are
+never fused.
+
+The winner records contributing view names, source detection count, suppression
+count, view bounds, suppressed boxes, method, threshold, and confidence
+strategy. When `prefer_full_frame: true`, a full-frame candidate supplies the
+coordinates while the confidence remains the maximum among contributors; this
+is an explicit trade-off and is false by default.
+
+NMS only merges detector hypotheses and cannot recover an undetected person. A
+large box which spans two mutually distinct smaller hypotheses is treated as
+ambiguous and discarded with explicit metadata so it cannot erase both. Without
+those smaller hypotheses, fusion cannot split the large box. A threshold that
+is too low can suppress adjacent passengers; one that is too high can send
+duplicate boxes into ByteTrack. Synthetic tests cover identical and shifted
+duplicates, same-view preservation, nearby people, one large box against two
+smaller boxes, empty input, and frame boundaries.
+
+## ByteTrack adapter boundary
+
+`ByteTrackAdapter` owns one Ultralytics `BYTETracker`. It converts each fused
+detection into an Ultralytics `Boxes` row:
+
+```text
+[left, top, right, bottom, confidence, class_id]
+```
+
+It then maps returned tracks back to the originating fused detection using the
+source-detection index in the tracker result, preserving view provenance and
+fusion metadata. Non-person detections, unexpected result shapes, invalid source
+indices, and internal update failures raise a precise `TrackerAdapterError`.
+There is deliberately no automatic fallback to `YOLO.track`.
+
+The adapter is tested with Ultralytics `8.4.95`, which is pinned in project
+dependencies. All internal imports and array-column assumptions live in this one
+module. The effective tracker thresholds and installed Ultralytics version are
+recorded in the run summary.
+
+The legacy combined adapter remains available only for explicitly constructed
+v0.1 callers and compatibility tests. The supported `python -m trackbus.main`
+path always assembles prediction, fusion, and explicit tracking separately.
 
 ## Counting state machine
 
-Each active tracking ID has one stable side and a human-readable state:
-`UNKNOWN`, `OUTSIDE`, `TRANSITIONING_IN`, `INSIDE`, or
-`TRANSITIONING_OUT`.
+Each active tracking ID has a stable side and one of these states: `UNKNOWN`,
+`OUTSIDE`, `TRANSITIONING_IN`, `INSIDE`, or `TRANSITIONING_OUT`.
 
-The first confirmed zone establishes where the person started and never creates
-an event. A different destination zone must be observed for
-`minimum_zone_frames` consecutive frames. OUTSIDE to INSIDE creates one `IN`
-event; INSIDE to OUTSIDE creates one `OUT` event. Repeated observations in the
-same zone do not create events. Returning to the stable origin cancels an
-incomplete movement.
+The first confirmed zone establishes the origin and never creates an event. A
+different destination must be observed for `minimum_zone_frames` consecutive
+frames. `OUTSIDE -> INSIDE` creates `IN`; `INSIDE -> OUTSIDE` creates `OUT`.
+Repeated observations in the stable zone do nothing, and returning to the origin
+cancels an incomplete transition. Track state expires after
+`stale_track_timeout` unseen frames.
 
-State is removed after `stale_track_timeout` unobserved frames. This bounds memory
-and reduces the damage from a tracker ID eventually being reused.
+These rules are independent of model, view, and diagnostic settings. TrackBus
+does not invent an event when a fragmented track lacks both sides of a complete
+transition.
 
-The TrackBus ByteTrack profile retains lost tracks for 60 frames. It can restore
-an ID when a matching detection returns after a brief miss, while the counter's
-longer 90-frame default keeps movement state available. Lost tracks do not
-produce synthetic bounding boxes or zone observations.
+## Diagnostics and artifacts
 
-## Run diagnostics
+The normal annotated output shows zones, tracked boxes and IDs, confidence,
+counter state, lane, counts, occupancy, and capacity. Calibration debug adds view
+rectangles, lanes, exclusions, and excluded boxes. Full visual debug adds faint
+raw boxes, fused boxes with confidence and view contributions, track trajectories,
+possible restart labels, and raw/fused frame totals.
 
-The JSON summary records tracked person observations per frame, frames with and
-without observations, the maximum simultaneous observations, and unique tracking
-IDs. It also records source dimensions, FPS, confidence, and inference image
-size. These values support repeatable comparisons but are not ground-truth
-precision, recall, or counting-accuracy measurements.
+The summary distinguishes raw detections, fused detections, and tracked
+observations; records empty-frame counts, unique IDs, tracker updates, enabled
+views, fusion settings, duration, FPS, and existing doorway diagnostics; and
+retains the v0.1 `person_detections_total` field with its tracked-observation
+semantics.
 
-Doorway diagnostics use the configurable box center by default. The counting
-state machine continues to use the box bottom-center and is intentionally
-isolated from diagnostic flags. Exclusions are also evaluated using the
-bottom-center anchor, then filtered before zone observations reach the counter.
-Stationary and source/ROI-edge fields are secondary diagnostic reports only.
-Wide or multi-lane boxes produce a simple possible-merge signal; v0.1.2 does not
-attempt speculative reconstruction of two prior tracks into one later box.
+Large diagnostic CSVs are created only when
+`diagnostics.export_detection_csv: true`:
 
-## Camera coordinate flow
+- raw detections include frame, timestamp, view, source box, confidence, class,
+  and exclusion status;
+- fused detections include the selected box, confidence, contributing views, and
+  JSON fusion metadata;
+- tracks include ID, box, confidence, anchor, zone, lane, counter state, and
+  contributing views.
 
-Lane and exclusion polygons always use normalized source-frame coordinates. If
-an ROI is enabled, YOLO and ByteTrack receive the stable cropped image. Their
-ROI-local boxes are translated and clipped to source coordinates before all
-downstream processing. A null ROI passes the original frame through unchanged.
+## Privacy and system boundaries
 
-Overlapping tiled inference is deferred. Safely combining full, left, and right
-crops requires running detection separately, translating boxes, merging duplicate
-detections, and then feeding one merged set into one ByteTrack instance. The
-current high-level `YOLO.track` path combines detection and tracking and cannot
-accept that merged detection set without a larger tracking-adapter redesign.
-
-## Coordinate model
-
-Zone polygons use normalized image coordinates from 0.0 to 1.0. At runtime they
-are scaled to the decoded frame dimensions. The tracked box's bottom-center is
-used because it generally approximates a person's location on the floor better
-than the center of an upright bounding box.
-
-## Boundaries
-
-YOLO and ByteTrack are isolated from counting logic. Unit tests can therefore
-exercise every transition with synthetic IDs and zone observations. The pipeline
-stores no biometric template and makes no attempt to identify a person beyond
-the temporary ID assigned within one processing run.
+Tracking IDs are temporary identifiers within a single processing run. TrackBus
+stores no face template, biometric, passenger identity, or cross-journey
+re-identification record. The v0.2 architecture contains no backend, database,
+dashboard, cloud deployment, map, forecasting, Yandex, or CAN-bus integration.

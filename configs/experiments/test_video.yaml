@@ -1,0 +1,93 @@
+# Small, explicit TrackBus v0.2 comparison for data/input/test_video.mp4.
+# This camera-specific matrix is not a universal bus-door calibration.
+version: 1
+base_config: ../test_video.yaml
+
+aggregate_ground_truth:
+  entered: 6
+  exited: 2
+
+# Used only when --ground-truth supplies frame-level annotations.
+evaluation:
+  tolerance_frames: 25
+  tolerance_seconds: null
+
+# Bounds are normalized against the original 320x240 source frame.
+views:
+  full:
+    bounds: [0.00, 0.00, 1.00, 1.00]
+  left_doorway:
+    bounds: [0.00, 0.15, 0.62, 1.00]
+  right_doorway:
+    bounds: [0.38, 0.15, 1.00, 1.00]
+
+runs:
+  - name: A_baseline_full_frame
+    description: Reproduce the v0.1.2 full-frame nano baseline.
+    model: yolo11n.pt
+    confidence: 0.35
+    image_size: 640
+    tracker:
+      config: configs/bytetrack_trackbus.yaml
+    enabled_views: [full]
+    detection_fusion:
+      method: nms
+      iou_threshold: 0.50
+      confidence_strategy: maximum
+      prefer_full_frame: false
+
+  - name: B_sensitive_full_frame
+    description: Lower-confidence full-frame nano comparison.
+    model: yolo11n.pt
+    confidence: 0.25
+    image_size: 640
+    tracker:
+      config: configs/bytetrack_trackbus.yaml
+    enabled_views: [full]
+    detection_fusion:
+      method: nms
+      iou_threshold: 0.50
+      confidence_strategy: maximum
+      prefer_full_frame: false
+
+  - name: C_balanced_full_frame
+    description: Small model with a sensitive full-frame threshold.
+    model: yolo11s.pt
+    confidence: 0.20
+    image_size: 640
+    tracker:
+      config: configs/bytetrack_trackbus.yaml
+    enabled_views: [full]
+    detection_fusion:
+      method: nms
+      iou_threshold: 0.50
+      confidence_strategy: maximum
+      prefer_full_frame: false
+
+  - name: D_multiview_nano
+    description: Nano model over full, left, and right overlapping views.
+    model: yolo11n.pt
+    confidence: 0.25
+    image_size: 640
+    tracker:
+      config: configs/bytetrack_trackbus.yaml
+    enabled_views: [full, left_doorway, right_doorway]
+    detection_fusion:
+      method: nms
+      iou_threshold: 0.50
+      confidence_strategy: maximum
+      prefer_full_frame: false
+
+  - name: E_multiview_small
+    description: Small model over full, left, and right overlapping views.
+    model: yolo11s.pt
+    confidence: 0.20
+    image_size: 640
+    tracker:
+      config: configs/bytetrack_trackbus.yaml
+    enabled_views: [full, left_doorway, right_doorway]
+    detection_fusion:
+      method: nms
+      iou_threshold: 0.50
+      confidence_strategy: maximum
+      prefer_full_frame: false

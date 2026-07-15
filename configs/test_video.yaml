@@ -4,7 +4,6 @@ model:
   path: yolo11n.pt
   confidence: 0.35
   imgsz: 640
-  # FP16 is enabled only on a supported CUDA device; CPU safely disables it.
   half: false
 
 device: auto
@@ -18,36 +17,45 @@ tracking:
   stale_track_timeout: 90
 
 # All camera-calibration coordinates are normalized against the source frame.
-# detection_roi is a deprecated v0.1 compatibility key. Named views are cropped
-# independently, translated to source coordinates, and fused before tracking.
+# This calibration is specific to data/input/test_video.mp4 and is not a
+# universal bus-camera preset. The v0.1 ROI experiment is intentionally removed.
 camera:
   detection_roi: null
   inference_views:
     - name: full
       bounds: [0.00, 0.00, 1.00, 1.00]
       enabled: true
+    - name: left_doorway
+      bounds: [0.00, 0.15, 0.62, 1.00]
+      enabled: false
+    - name: right_doorway
+      bounds: [0.38, 0.15, 1.00, 1.00]
+      enabled: false
+
   doorway_lanes:
     anchor: center
-    left_lane: null
-    center_lane: null
-    right_lane: null
-  # Use only for known static structures, never passenger pathways.
+    left_lane:
+      - [0.08, 0.08]
+      - [0.40, 0.08]
+      - [0.40, 0.94]
+      - [0.08, 0.94]
+
+    center_lane:
+      - [0.32, 0.08]
+      - [0.68, 0.08]
+      - [0.68, 0.94]
+      - [0.32, 0.94]
+
+    right_lane:
+      - [0.60, 0.08]
+      - [0.92, 0.08]
+      - [0.92, 0.94]
+      - [0.60, 0.94]
+
   exclusion_polygons: []
-  debug_calibration_overlay: false
+  debug_calibration_overlay: true
 
 diagnostics:
-  nearby_distance_normalized: 0.12
-  heavy_overlap_iou: 0.50
-  id_restart_window_frames: 15
-  id_restart_distance_normalized: 0.08
-  edge_margin_pixels: 2
-  stationary_step_threshold: 0.005
-  likely_static_minimum_frames: 75
-  likely_static_minimum_percentage: 0.90
-  wide_box_aspect_ratio: 0.90
-  wide_box_doorway_ratio: 0.45
-  multi_lane_minimum_box_overlap: 0.05
-  # These frame-level CSV files can be large and are disabled by default.
   export_detection_csv: false
   debug_visualization: false
   trajectory_length: 30

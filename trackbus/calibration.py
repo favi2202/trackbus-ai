@@ -154,6 +154,13 @@ class FrameCalibration:
         )
 
     def touches_roi_edge(self, person: TrackedPerson, margin: int) -> bool:
+        view_bounds = person.metadata.get("contributing_view_bounds")
+        if isinstance(view_bounds, dict) and view_bounds:
+            return any(
+                self._touches_normalized_view_edge(person, bounds, margin)
+                for bounds in view_bounds.values()
+                if isinstance(bounds, (list, tuple)) and len(bounds) == 4
+            )
         left, top, right, bottom = person.bounding_box
         roi = self.roi
         return (
@@ -161,6 +168,19 @@ class FrameCalibration:
             or top <= roi.top + margin
             or right >= roi.right - 1 - margin
             or bottom >= roi.bottom - 1 - margin
+        )
+
+    def _touches_normalized_view_edge(
+        self, person: TrackedPerson, bounds: object, margin: int
+    ) -> bool:
+        normalized = tuple(float(value) for value in bounds)  # type: ignore[union-attr]
+        view = _pixel_roi(normalized, self.frame_width, self.frame_height)
+        left, top, right, bottom = person.bounding_box
+        return (
+            left <= view.left + margin
+            or top <= view.top + margin
+            or right >= view.right - 1 - margin
+            or bottom >= view.bottom - 1 - margin
         )
 
     def _validate_exclusions_do_not_cover_lanes(self) -> None:

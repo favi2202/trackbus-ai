@@ -1,4 +1,4 @@
-"""Command-line entry point for TrackBus v0.1.2."""
+"""Command-line entry point for TrackBus v0.2."""
 
 from __future__ import annotations
 
@@ -10,9 +10,14 @@ from pathlib import Path
 
 from trackbus.config import AppConfig, ConfigError, load_config
 from trackbus.counter import PassengerCounter
-from trackbus.detector import DetectorError, PersonDetector, resolve_device
+from trackbus.detection_export import (
+    DetectionCsvExporter,
+    derive_detection_export_paths,
+)
+from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
 from trackbus.event_logger import EventLogger, derive_artifact_paths
-from trackbus.tracker import ByteTrackPersonTracker
+from trackbus.fusion import NmsDetectionFusion
+from trackbus.tracker import ByteTrackAdapter, TrackerAdapterError
 from trackbus.video_processor import VideoProcessingError, VideoProcessor
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
@@ -94,6 +99,30 @@ def _load_runtime_config(args: argparse.Namespace) -> AppConfig:
     )
 
 
+def _validated_artifact_paths(
+    input_path: Path,
+    **artifacts: Path,
+) -> dict[str, Path]:
+    """Resolve output paths and reject aliases before anything is truncated."""
+
+    resolved_input = input_path.expanduser().resolve()
+    resolved = {name: path.expanduser().resolve() for name, path in artifacts.items()}
+    by_path: dict[Path, list[str]] = {}
+    for name, path in resolved.items():
+        if path == resolved_input:
+            raise VideoProcessingError(
+                f"Output artifact '{name}' must not overwrite the input video."
+            )
+        by_path.setdefault(path, []).append(name)
+    duplicates = [names for names in by_path.values() if len(names) > 1]
+    if duplicates:
+        joined = "; ".join(", ".join(names) for names in duplicates)
+        raise VideoProcessingError(
+            f"Output artifact paths must be pairwise distinct (conflict: {joined})."
+        )
+    return resolved
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -106,13 +135,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         input_path = args.input.expanduser().resolve()
-        output_path = config.outputs.video.expanduser().resolve()
+        configured_output = config.outputs.video.expanduser().resolve()
         if not input_path.is_file():
             raise VideoProcessingError(f"Input video does not exist: {input_path}")
-        if input_path == output_path:
-            raise VideoProcessingError(
-                "Input and output video paths must be different."
-            )
+        csv_path, summary_path = derive_artifact_paths(
+            configured_output,
+            config.outputs.events_csv,
+            config.outputs.summary_json,
+        )
+        raw_path, fused_path, tracks_path = derive_detection_export_paths(
+            configured_output,
+            config.outputs.raw_detections_csv,
+            config.outputs.fused_detections_csv,
+            config.outputs.tracks_csv,
+        )
+        artifacts = _validated_artifact_paths(
+            input_path,
+            video=configured_output,
+            events_csv=csv_path,
+            summary_json=summary_path,
+            raw_detections_csv=raw_path,
+            fused_detections_csv=fused_path,
+            tracks_csv=tracks_path,
+        )
+        output_path = artifacts["video"]
+        csv_path = artifacts["events_csv"]
+        summary_path = artifacts["summary_json"]
+        raw_path = artifacts["raw_detections_csv"]
+        fused_path = artifacts["fused_detections_csv"]
+        tracks_path = artifacts["tracks_csv"]
 
         device, device_label = resolve_device(config.device)
         LOGGER.info(
@@ -122,14 +173,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             config.model.confidence,
             config.model.imgsz,
         )
-        detector = PersonDetector(
-            config.model.path, config.model.confidence, config.model.imgsz
-        )
-        tracker = ByteTrackPersonTracker(
-            detector,
-            tracker_config=config.tracking.tracker,
+        detector = UltralyticsDetector(
+            config.model.path,
+            config.model.confidence,
+            config.model.imgsz,
             device=device,
             device_label=device_label,
+            half=config.model.half,
+        )
+        tracker = ByteTrackAdapter(
+            tracker_config=config.tracking.tracker,
+            device_label=device_label,
+            tracker_overrides=config.tracking.bytetrack_overrides(),
+        )
+        fusion = NmsDetectionFusion(
+            iou_threshold=config.detection_fusion.iou_threshold,
+            confidence_strategy=config.detection_fusion.confidence_strategy,
+            prefer_full_frame=config.detection_fusion.prefer_full_frame,
         )
         counter = PassengerCounter(
             capacity=config.capacity,
@@ -137,12 +197,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             minimum_zone_frames=config.tracking.minimum_zone_frames,
             stale_track_timeout=config.tracking.stale_track_timeout,
         )
-        csv_path, summary_path = derive_artifact_paths(
-            output_path, config.outputs.events_csv, config.outputs.summary_json
-        )
-        with EventLogger(csv_path, summary_path) as event_logger:
+        with (
+            EventLogger(csv_path, summary_path) as event_logger,
+            DetectionCsvExporter(
+                enabled=config.diagnostics.export_detection_csv,
+                raw_path=raw_path,
+                fused_path=fused_path,
+                tracks_path=tracks_path,
+            ) as detection_exporter,
+        ):
             processor = VideoProcessor(
                 tracker=tracker,
+                detector=detector,
+                fusion=fusion,
                 counter=counter,
                 zones_config=config.zones,
                 event_logger=event_logger,
@@ -151,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 inference_image_size=config.model.imgsz,
                 camera_config=config.camera,
                 diagnostics_config=config.diagnostics,
+                detection_exporter=detection_exporter,
             )
             summary = processor.process(input_path, output_path, show=args.show)
 
@@ -164,10 +232,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOGGER.info("Annotated video: %s", output_path)
         LOGGER.info("Event log: %s", csv_path)
         LOGGER.info("Summary: %s", summary_path)
+        if config.diagnostics.export_detection_csv:
+            LOGGER.info("Raw detections: %s", raw_path)
+            LOGGER.info("Fused detections: %s", fused_path)
+            LOGGER.info("Tracks: %s", tracks_path)
         return 0
     except (
         ConfigError,
         DetectorError,
+        TrackerAdapterError,
         VideoProcessingError,
         OSError,
         ValueError,

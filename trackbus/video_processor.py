@@ -1,9 +1,10 @@
-"""Video decoding, TrackBus inference, annotation, and output encoding."""
+"""Video decoding, explicit detection/tracking stages, and output encoding."""
 
 from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,25 @@ import numpy as np
 from numpy.typing import NDArray
 
 from trackbus.calibration import DoorwayLane, FrameCalibration
-from trackbus.config import CameraConfig, DiagnosticsConfig, ZonesConfig
+from trackbus.config import (
+    CameraConfig,
+    DiagnosticsConfig,
+    InferenceViewConfig,
+    ZonesConfig,
+    resolve_inference_views,
+)
 from trackbus.counter import PassengerCounter
+from trackbus.detection import Detection, TrackedDetection
+from trackbus.detection_export import DetectionCsvExporter
 from trackbus.diagnostics import DoorwayDiagnostics
 from trackbus.event_logger import EventLogger
-from trackbus.tracker import ByteTrackPersonTracker, TrackedPerson
+from trackbus.interfaces import DetectionFusion, DetectorBackend, TrackerBackend
+from trackbus.views import (
+    MultiViewInference,
+    PixelInferenceView,
+    box_has_positive_area,
+    clip_box_to_frame,
+)
 from trackbus.zones import PixelZones, ZoneMembership
 
 LOGGER = logging.getLogger(__name__)
@@ -46,12 +61,27 @@ class ProcessingSummary:
     confidence_threshold: float
     inference_image_size: int
     device_used: str
+    tracker_backend: str
+    tracker_config_path: str | None
+    tracker_effective_config: dict[str, Any]
+    ultralytics_version: str | None
     person_detections_total: int
+    raw_person_detections_total: int
+    fused_detections_total: int
+    tracked_person_observations_total: int
     frames_with_person_detections: int
     frames_without_person_detections: int
+    frames_with_raw_detections: int
+    frames_without_raw_detections: int
+    frames_with_fused_detections: int
+    frames_without_fused_detections: int
     average_person_detections_per_frame: float
     maximum_person_detections_in_frame: int
     unique_tracking_ids: int
+    tracker_updates: int
+    enabled_inference_views: tuple[str, ...]
+    detection_fusion_method: str
+    detection_fusion_iou_threshold: float | None
     detection_roi_enabled: bool
     detection_roi_normalized: tuple[float, float, float, float] | None
     excluded_person_detections_total: int
@@ -65,12 +95,12 @@ class ProcessingSummary:
 
 
 class VideoProcessor:
-    """Run tracking and counting for one local video."""
+    """Run one source-frame pipeline and update one tracker once per frame."""
 
     def __init__(
         self,
         *,
-        tracker: ByteTrackPersonTracker,
+        tracker: TrackerBackend | Any,
         counter: PassengerCounter,
         zones_config: ZonesConfig,
         event_logger: EventLogger,
@@ -79,8 +109,16 @@ class VideoProcessor:
         inference_image_size: int,
         camera_config: CameraConfig,
         diagnostics_config: DiagnosticsConfig,
+        detector: DetectorBackend | None = None,
+        fusion: DetectionFusion | None = None,
+        inference_views: tuple[InferenceViewConfig, ...] | None = None,
+        detection_exporter: DetectionCsvExporter | None = None,
     ) -> None:
+        if (detector is None) != (fusion is None):
+            raise ValueError("detector and fusion must be supplied together")
         self.tracker = tracker
+        self.detector = detector
+        self.fusion = fusion
         self.counter = counter
         self.zones_config = zones_config
         self.event_logger = event_logger
@@ -89,6 +127,14 @@ class VideoProcessor:
         self.inference_image_size = inference_image_size
         self.camera_config = camera_config
         self.diagnostics_config = diagnostics_config
+        self.inference_view_configs = inference_views or resolve_inference_views(
+            camera_config
+        )
+        self.detection_exporter = detection_exporter
+
+    @property
+    def explicit_pipeline(self) -> bool:
+        return self.detector is not None
 
     def process(
         self, input_path: Path, output_path: Path, *, show: bool = False
@@ -125,16 +171,39 @@ class VideoProcessor:
         zones = PixelZones.from_normalized(self.zones_config, width, height)
         calibration = FrameCalibration(self.camera_config, width, height)
         doorway_diagnostics = DoorwayDiagnostics(calibration, self.diagnostics_config)
+        view_inference = self._build_view_inference(width, height)
+        pixel_views = view_inference.views if view_inference is not None else ()
         processed_frames = 0
-        person_detections_total = 0
+        raw_detections_total = 0
+        fused_detections_total = 0
+        tracked_detections_total = 0
+        frames_with_raw_detections = 0
+        frames_with_fused_detections = 0
         frames_with_person_detections = 0
         maximum_person_detections_in_frame = 0
         unique_tracking_ids: set[int] = set()
         excluded_person_detections_total = 0
+        trajectories: dict[int, deque[tuple[int, int]]] = defaultdict(
+            lambda: deque(maxlen=self.diagnostics_config.trajectory_length)
+        )
         started = time.perf_counter()
         LOGGER.info(
-            "Processing %s (%dx%d at %.2f FPS)", input_path, width, height, source_fps
+            "Processing %s (%dx%d at %.2f FPS; views=%s)",
+            input_path,
+            width,
+            height,
+            source_fps,
+            ",".join(view.name for view in pixel_views) or "legacy-injected",
         )
+
+        exporter = self.detection_exporter
+        if exporter is None:
+            exporter = DetectionCsvExporter(
+                enabled=False,
+                raw_path=Path("unused.raw.csv"),
+                fused_path=Path("unused.fused.csv"),
+                tracks_path=Path("unused.tracks.csv"),
+            )
 
         try:
             while True:
@@ -143,24 +212,64 @@ class VideoProcessor:
                     break
                 frame_number = processed_frames
                 self.counter.remove_stale_tracks(frame_number)
-                local_people = self.tracker.update(calibration.inference_frame(frame))
-                source_people = calibration.to_source(local_people)
-                excluded_people: list[TrackedPerson] = []
-                people: list[TrackedPerson] = []
-                for person in source_people:
-                    target = (
-                        excluded_people if calibration.is_excluded(person) else people
+
+                if view_inference is None:
+                    raw, included, fused, people, excluded = self._legacy_frame(
+                        frame, calibration
                     )
-                    target.append(person)
-                excluded_person_detections_total += len(excluded_people)
-                detections_in_frame = len(people)
-                person_detections_total += detections_in_frame
-                if detections_in_frame:
-                    frames_with_person_detections += 1
+                else:
+                    raw = view_inference.collect(frame)
+                    classified = [
+                        (detection, calibration.is_excluded(detection))
+                        for detection in raw
+                    ]
+                    excluded = [
+                        detection
+                        for detection, is_excluded in classified
+                        if is_excluded
+                    ]
+                    included = [
+                        detection
+                        for detection, is_excluded in classified
+                        if not is_excluded
+                    ]
+                    fused = self.fusion.fuse(included) if self.fusion else []
+                    # This is the only explicit tracker call in a decoded-frame loop.
+                    tracked = self.tracker.update(fused, frame)
+                    people = []
+                    for person in tracked:
+                        clipped_box = clip_box_to_frame(
+                            person.bounding_box,
+                            width,
+                            height,
+                        )
+                        if not box_has_positive_area(clipped_box):
+                            LOGGER.warning(
+                                "Dropping zero-area track %d after source clipping.",
+                                person.tracking_id,
+                            )
+                            continue
+                        people.append(
+                            person.with_box(
+                                clipped_box,
+                                tracker_box_clipped=(
+                                    clipped_box != person.bounding_box
+                                ),
+                            )
+                        )
+
+                raw_detections_total += len(raw)
+                fused_detections_total += len(fused)
+                tracked_detections_total += len(people)
+                excluded_person_detections_total += len(excluded)
+                frames_with_raw_detections += bool(raw)
+                frames_with_fused_detections += bool(fused)
+                frames_with_person_detections += bool(people)
                 maximum_person_detections_in_frame = max(
-                    maximum_person_detections_in_frame, detections_in_frame
+                    maximum_person_detections_in_frame, len(people)
                 )
                 unique_tracking_ids.update(person.tracking_id for person in people)
+
                 lanes = {
                     person.tracking_id: calibration.lane_for(person)
                     for person in people
@@ -180,6 +289,9 @@ class VideoProcessor:
                 for person in people:
                     membership = zones.membership(person.anchor)
                     memberships[person.tracking_id] = membership
+                    trajectories[person.tracking_id].append(
+                        tuple(int(value) for value in person.center)
+                    )
                     event = self.counter.observe(
                         person.tracking_id, membership, frame_number
                     )
@@ -194,6 +306,37 @@ class VideoProcessor:
                             event.current_occupancy,
                         )
 
+                exporter.record_raw(
+                    frame_number,
+                    frame_number / source_fps,
+                    [
+                        (detection, calibration.is_excluded(detection))
+                        for detection in raw
+                    ],
+                )
+                exporter.record_fused(frame_number, fused)
+                exporter.record_tracks(
+                    frame_number,
+                    people,
+                    {
+                        tracking_id: membership.value
+                        for tracking_id, membership in memberships.items()
+                    },
+                    {
+                        tracking_id: lane.value if lane is not None else None
+                        for tracking_id, lane in lanes.items()
+                    },
+                    {
+                        person.tracking_id: (
+                            state.value
+                            if (state := self.counter.track_state(person.tracking_id))
+                            is not None
+                            else None
+                        )
+                        for person in people
+                    },
+                )
+
                 annotated = self._annotate(
                     frame,
                     zones,
@@ -201,14 +344,19 @@ class VideoProcessor:
                     memberships,
                     calibration,
                     lanes,
-                    excluded_people,
+                    excluded,
+                    raw,
+                    fused,
+                    pixel_views,
+                    trajectories,
+                    doorway_diagnostics,
                 )
                 writer.write(annotated)
                 processed_frames += 1
 
                 if show:
                     try:
-                        cv2.imshow("TrackBus v0.1.2 - press q to stop", annotated)
+                        cv2.imshow("TrackBus v0.2.0 - press q to stop", annotated)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             LOGGER.info("Preview stopped by user.")
                             break
@@ -224,6 +372,18 @@ class VideoProcessor:
                 cv2.destroyAllWindows()
 
         elapsed = time.perf_counter() - started
+        measured_tracker_updates = int(
+            getattr(self.tracker, "update_count", processed_frames)
+        )
+        if self.explicit_pipeline and measured_tracker_updates != processed_frames:
+            raise VideoProcessingError(
+                "Tracker update invariant failed: "
+                f"{measured_tracker_updates} updates for {processed_frames} frames."
+            )
+        diagnostic_summary = doorway_diagnostics.summary()
+        fusion_method = getattr(self.fusion, "method", "legacy_combined")
+        fusion_iou = getattr(self.fusion, "iou_threshold", None)
+        enabled_view_names = tuple(view.name for view in pixel_views)
         summary = ProcessingSummary(
             input_video=str(input_path),
             source_width=width,
@@ -241,36 +401,102 @@ class VideoProcessor:
             model_used=self.model_name,
             confidence_threshold=self.model_confidence,
             inference_image_size=self.inference_image_size,
-            device_used=self.tracker.device_label,
-            person_detections_total=person_detections_total,
+            device_used=getattr(self.tracker, "device_label", "unknown"),
+            tracker_backend=type(self.tracker).__name__,
+            tracker_config_path=getattr(self.tracker, "tracker_config", None),
+            tracker_effective_config=dict(
+                getattr(self.tracker, "effective_config", {})
+            ),
+            ultralytics_version=getattr(self.tracker, "ultralytics_version", None),
+            # Preserve the v0.1 summary field's tracked-observation semantics.
+            person_detections_total=tracked_detections_total,
+            raw_person_detections_total=raw_detections_total,
+            fused_detections_total=fused_detections_total,
+            tracked_person_observations_total=tracked_detections_total,
             frames_with_person_detections=frames_with_person_detections,
             frames_without_person_detections=(
                 processed_frames - frames_with_person_detections
             ),
+            frames_with_raw_detections=frames_with_raw_detections,
+            frames_without_raw_detections=(
+                processed_frames - frames_with_raw_detections
+            ),
+            frames_with_fused_detections=frames_with_fused_detections,
+            frames_without_fused_detections=(
+                processed_frames - frames_with_fused_detections
+            ),
             average_person_detections_per_frame=(
-                round(person_detections_total / processed_frames, 3)
+                round(tracked_detections_total / processed_frames, 3)
                 if processed_frames
                 else 0.0
             ),
             maximum_person_detections_in_frame=maximum_person_detections_in_frame,
             unique_tracking_ids=len(unique_tracking_ids),
+            tracker_updates=measured_tracker_updates,
+            enabled_inference_views=enabled_view_names,
+            detection_fusion_method=fusion_method,
+            detection_fusion_iou_threshold=fusion_iou,
             detection_roi_enabled=calibration.roi.enabled,
             detection_roi_normalized=self.camera_config.detection_roi,
             excluded_person_detections_total=excluded_person_detections_total,
-            doorway_diagnostics=doorway_diagnostics.summary(),
+            doorway_diagnostics=diagnostic_summary,
         )
         self.event_logger.write_summary(summary.to_dict())
         return summary
+
+    def _build_view_inference(
+        self, width: int, height: int
+    ) -> MultiViewInference | None:
+        if self.detector is None:
+            return None
+        return MultiViewInference.from_configs(
+            self.detector,
+            self.inference_view_configs,
+            width,
+            height,
+        )
+
+    def _legacy_frame(
+        self, frame: NDArray[np.uint8], calibration: FrameCalibration
+    ) -> tuple[
+        list[Detection],
+        list[Detection],
+        list[Detection],
+        list[TrackedDetection],
+        list[TrackedDetection],
+    ]:
+        """Support explicitly injected v0.1-style fake/custom tracked backends."""
+
+        local_people = self.tracker.update(calibration.inference_frame(frame))
+        source_people = calibration.to_source(local_people)
+        excluded = [
+            person for person in source_people if calibration.is_excluded(person)
+        ]
+        people = [
+            person for person in source_people if not calibration.is_excluded(person)
+        ]
+        raw = [
+            _detection_from_track(person, "legacy_combined") for person in source_people
+        ]
+        included = [
+            _detection_from_track(person, "legacy_combined") for person in people
+        ]
+        return raw, included, included.copy(), people, excluded
 
     def _annotate(
         self,
         frame: NDArray[np.uint8],
         zones: PixelZones,
-        people: list[TrackedPerson],
+        people: list[TrackedDetection],
         memberships: dict[int, ZoneMembership],
         calibration: FrameCalibration,
         lanes: dict[int, DoorwayLane | None],
-        excluded_people: list[TrackedPerson],
+        excluded: list[Detection] | list[TrackedDetection],
+        raw: list[Detection],
+        fused: list[Detection],
+        views: tuple[PixelInferenceView, ...],
+        trajectories: dict[int, deque[tuple[int, int]]],
+        doorway_diagnostics: DoorwayDiagnostics,
     ) -> NDArray[np.uint8]:
         annotated = frame.copy()
         overlay = annotated.copy()
@@ -282,8 +508,13 @@ class VideoProcessor:
         _zone_label(annotated, zones.outside, "OUTSIDE", (0, 165, 255))
         _zone_label(annotated, zones.inside, "INSIDE", (60, 200, 90))
 
-        if calibration.config.debug_calibration_overlay:
-            _draw_calibration_overlay(annotated, calibration)
+        calibration_debug = calibration.config.debug_calibration_overlay
+        visual_debug = self.diagnostics_config.debug_visualization
+        if calibration_debug or visual_debug:
+            _draw_calibration_overlay(annotated, calibration, views)
+        if visual_debug:
+            _draw_raw_detections(annotated, raw)
+            _draw_fused_detections(annotated, fused)
 
         for person in people:
             left, top, right, bottom = (int(value) for value in person.bounding_box)
@@ -300,28 +531,44 @@ class VideoProcessor:
             state_text = state.value if state is not None else "new"
             lane = lanes[person.tracking_id]
             lane_text = f" {lane.value}" if lane is not None else ""
+            view_text = (
+                f" [{'+'.join(person.source_views)}]"
+                if visual_debug and person.source_views
+                else ""
+            )
+            restart = doorway_diagnostics.tracks[person.tracking_id]
+            restart_text = (
+                f" restart?{restart.possible_restart_of_tracking_id}"
+                if visual_debug and restart.possible_restart_of_tracking_id is not None
+                else ""
+            )
             label = (
                 f"ID {person.tracking_id} {person.confidence:.2f} "
-                f"{state_text}{lane_text}"
+                f"{state_text}{lane_text}{view_text}{restart_text}"
             )
             _text_with_background(annotated, label, (left, max(18, top - 7)), color)
             anchor = tuple(int(value) for value in person.anchor)
             cv2.circle(annotated, anchor, 4, color, -1)
+            if visual_debug:
+                points = np.asarray(trajectories[person.tracking_id], dtype=np.int32)
+                if len(points) >= 2:
+                    cv2.polylines(annotated, [points], False, color, 1)
 
-        if calibration.config.debug_calibration_overlay:
-            for person in excluded_people:
-                left, top, right, bottom = (int(value) for value in person.bounding_box)
+        if calibration_debug or visual_debug:
+            for detection in excluded:
+                left, top, right, bottom = (
+                    int(value) for value in detection.bounding_box
+                )
                 cv2.rectangle(annotated, (left, top), (right, bottom), (40, 40, 230), 2)
                 _text_with_background(
                     annotated,
-                    f"ID {person.tracking_id} EXCLUDED",
+                    f"{getattr(detection, 'source_view', 'track')} EXCLUDED",
                     (left, max(18, top - 7)),
                     (40, 40, 230),
                 )
 
         occupancy = self.counter.current_occupancy
         actual_percentage = self.counter.occupancy_percentage
-        # Keep the overlay readable if configuration or counts are extreme.
         displayed_percentage = min(actual_percentage, 999.0)
         capacity_status = " OVER CAPACITY" if occupancy > self.counter.capacity else ""
         lines = [
@@ -333,12 +580,27 @@ class VideoProcessor:
             f"Occupancy: {occupancy}/{self.counter.capacity}",
             f"Capacity: {displayed_percentage:.1f}%{capacity_status}",
         ]
+        if visual_debug:
+            lines.insert(1, f"Raw: {len(raw)}  Fused: {len(fused)}")
         _draw_status_panel(annotated, lines, occupancy > self.counter.capacity)
         return annotated
 
 
+def _detection_from_track(person: TrackedDetection, source_view: str) -> Detection:
+    return Detection(
+        bounding_box=person.bounding_box,
+        confidence=person.confidence,
+        class_id=person.class_id,
+        source_view=source_view,
+        contributing_views=person.source_views,
+        metadata=person.metadata,
+    )
+
+
 def _draw_calibration_overlay(
-    frame: NDArray[np.uint8], calibration: FrameCalibration
+    frame: NDArray[np.uint8],
+    calibration: FrameCalibration,
+    views: tuple[PixelInferenceView, ...] = (),
 ) -> None:
     if calibration.roi.enabled:
         roi = calibration.roi
@@ -350,7 +612,24 @@ def _draw_calibration_overlay(
             2,
         )
         _text_with_background(
-            frame, "DETECTION ROI", (roi.left + 5, roi.top + 20), (255, 180, 40)
+            frame, "LEGACY DETECTION ROI", (roi.left + 5, roi.top + 20), (255, 180, 40)
+        )
+
+    view_colors = ((255, 180, 40), (255, 100, 180), (180, 220, 60), (80, 180, 255))
+    for index, view in enumerate(views):
+        color = view_colors[index % len(view_colors)]
+        cv2.rectangle(
+            frame,
+            (view.left, view.top),
+            (view.right - 1, view.bottom - 1),
+            color,
+            1,
+        )
+        _text_with_background(
+            frame,
+            f"VIEW {view.name}",
+            (view.left + 4, min(frame.shape[0] - 4, view.top + 17)),
+            color,
         )
 
     lane_colors = {
@@ -365,6 +644,28 @@ def _draw_calibration_overlay(
     for index, polygon in enumerate(calibration.exclusions):
         cv2.polylines(frame, [polygon], True, (40, 40, 230), 2)
         _zone_label(frame, polygon, f"EXCLUSION {index + 1}", (40, 40, 230))
+
+
+def _draw_raw_detections(frame: NDArray[np.uint8], detections: list[Detection]) -> None:
+    overlay = frame.copy()
+    for detection in detections:
+        left, top, right, bottom = (int(value) for value in detection.bounding_box)
+        cv2.rectangle(overlay, (left, top), (right, bottom), (160, 160, 160), 1)
+    cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
+
+
+def _draw_fused_detections(
+    frame: NDArray[np.uint8], detections: list[Detection]
+) -> None:
+    for detection in detections:
+        left, top, right, bottom = (int(value) for value in detection.bounding_box)
+        cv2.rectangle(frame, (left, top), (right, bottom), (255, 220, 40), 1)
+        _text_with_background(
+            frame,
+            f"FUSED {detection.confidence:.2f} {'+'.join(detection.source_views)}",
+            (left, max(18, bottom + 14)),
+            (255, 220, 40),
+        )
 
 
 def _zone_label(
@@ -402,7 +703,7 @@ def _text_with_background(
 def _draw_status_panel(
     frame: NDArray[np.uint8], lines: list[str], over_capacity: bool
 ) -> None:
-    panel_width = 360
+    panel_width = min(420, max(100, frame.shape[1] - 8))
     line_height = 25
     panel_height = len(lines) * line_height + 14
     overlay = frame.copy()

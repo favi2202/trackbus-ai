@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trackbus-ai"
-version = "0.1.2"
+version = "0.2.0"
 description = "Two-zone passenger counting prototype for public buses"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,8 @@ dependencies = [
     "numpy>=1.26,<3",
     "opencv-python>=4.10,<5",
     "PyYAML>=6,<7",
-    "ultralytics>=8.3,<9",
+    # ByteTrack uses a wrapped internal API verified by adapter contract tests.
+    "ultralytics==8.4.95",
 ]
 
 [project.optional-dependencies]
