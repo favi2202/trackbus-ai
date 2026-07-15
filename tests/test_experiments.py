@@ -235,6 +235,61 @@ def test_resolved_configuration_loads_through_application_config(
     assert config.outputs.raw_detections_csv == artifacts.raw_detections_csv.resolve()
 
 
+def test_matrix_resolves_precision_and_event_stability_settings(tmp_path: Path) -> None:
+    matrix_path = write_matrix(tmp_path)
+    raw = yaml.safe_load(matrix_path.read_text("utf-8"))
+    raw["runs"][0]["precision"] = "fp16"
+    raw["runs"][0]["tracker"].update(
+        {
+            "minimum_origin_zone_frames": 4,
+            "minimum_destination_zone_frames": 5,
+            "maximum_transition_gap_frames": 12,
+            "event_cooldown_frames": 40,
+            "zone_anchor": "center",
+            "zone_boundary_hysteresis": 0.01,
+        }
+    )
+    matrix_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    matrix = load_experiment_matrix(matrix_path)
+    resolved = resolve_run_configuration(
+        matrix,
+        matrix.runs[0],
+        build_artifacts(tmp_path / "results", matrix.runs[0]),
+    )
+
+    assert matrix.runs[0].precision == "fp16"
+    assert resolved["model"]["precision"] == "fp16"
+    assert "half" not in resolved["model"]
+    assert resolved["tracking"]["minimum_origin_zone_frames"] == 4
+    assert resolved["tracking"]["minimum_destination_zone_frames"] == 5
+    assert resolved["tracking"]["maximum_transition_gap_frames"] == 12
+    assert resolved["tracking"]["event_cooldown_frames"] == 40
+    assert resolved["tracking"]["zone_anchor"] == "center"
+    assert resolved["tracking"]["zone_boundary_hysteresis"] == 0.01
+
+
+def test_matrix_preserves_deprecated_half_when_precision_is_not_a_dimension(
+    tmp_path: Path,
+) -> None:
+    matrix_path = write_matrix(tmp_path)
+    raw_base = yaml.safe_load((tmp_path / "base.yaml").read_text("utf-8"))
+    raw_base["model"]["half"] = False
+    (tmp_path / "base.yaml").write_text(
+        yaml.safe_dump(raw_base, sort_keys=False), encoding="utf-8"
+    )
+
+    matrix = load_experiment_matrix(matrix_path)
+    resolved = resolve_run_configuration(
+        matrix,
+        matrix.runs[0],
+        build_artifacts(tmp_path / "results", matrix.runs[0]),
+    )
+
+    assert matrix.runs[0].precision is None
+    assert resolved["model"]["half"] is False
+
+
 def result(
     name: str,
     *,
@@ -269,6 +324,39 @@ def test_ranking_uses_event_f1_only_with_frame_ground_truth() -> None:
     assert [item["name"] for item in aggregate_ranked] == [
         "exact totals",
         "good events",
+    ]
+
+
+def test_event_ranking_breaks_f1_ties_by_fp_recall_error_instability_and_fps() -> None:
+    common = {
+        "status": "completed",
+        "event_f1": 0.8,
+        "event_false_positives": 1,
+        "event_recall": 0.8,
+        "aggregate_count_error": 1,
+        "total_crossing_count_error": 1,
+        "rapid_same_track_event_count": 0,
+        "possible_id_restarts": 0,
+        "false_event_risk_score": 0,
+        "processing_fps": 20.0,
+    }
+    fewer_fp = {**common, "name": "fewer fp", "event_false_positives": 0}
+    more_recall = {**common, "name": "more recall", "event_recall": 0.9}
+    unstable = {**common, "name": "unstable", "rapid_same_track_event_count": 2}
+    faster = {**common, "name": "faster", "processing_fps": 25.0}
+    base = {**common, "name": "base"}
+
+    ranked = rank_results(
+        [unstable, base, faster, more_recall, fewer_fp],
+        has_frame_ground_truth=True,
+    )
+
+    assert [item["name"] for item in ranked] == [
+        "fewer fp",
+        "more recall",
+        "faster",
+        "base",
+        "unstable",
     ]
 
 
@@ -360,6 +448,36 @@ def test_runner_accepts_fake_executor_without_loading_a_model(
     assert (tmp_path / "output" / "a_baseline" / "resolved_config.yaml").is_file()
 
 
+def test_runner_preserves_unavailable_doorway_diagnostics(tmp_path: Path) -> None:
+    matrix = load_experiment_matrix(write_matrix(tmp_path))
+    input_path = tmp_path / "video.mp4"
+    input_path.write_bytes(b"fake video")
+
+    def fake_executor(
+        _input: Path, _config: Path, _artifacts: ExperimentArtifacts
+    ) -> dict[str, Any]:
+        return complete_summary(
+            doorway_diagnostics_available=False,
+            possible_id_restart_count=None,
+            tracks_disappearing_after_heavy_overlap=None,
+        )
+
+    ranked = run_experiments(
+        input_path=input_path,
+        matrix=matrix,
+        output_dir=tmp_path / "unavailable_diagnostics",
+        executor=fake_executor,
+    )
+
+    assert all(item["status"] == "completed" for item in ranked)
+    assert all(item["doorway_diagnostics_available"] is False for item in ranked)
+    assert all(item["possible_id_restarts"] is None for item in ranked)
+    assert all(
+        item["tracks_disappearing_after_heavy_overlap"] is None for item in ranked
+    )
+    assert all(item["false_event_risk_score"] == 1 for item in ranked)
+
+
 def test_runner_uses_frame_annotations_for_event_ranking(tmp_path: Path) -> None:
     matrix = load_experiment_matrix(
         write_matrix(tmp_path, expected_entered=1, expected_exited=1)
@@ -418,6 +536,37 @@ def test_runner_uses_frame_annotations_for_event_ranking(tmp_path: Path) -> None
     assert leaderboard["ground_truth"]["expected_exited"] == 1
 
 
+def test_runner_records_rapid_same_track_event_instability(tmp_path: Path) -> None:
+    matrix = load_experiment_matrix(write_matrix(tmp_path))
+    input_path = tmp_path / "video.mp4"
+    input_path.write_bytes(b"fake video")
+
+    def fake_executor(
+        _input: Path, _config: Path, artifacts: ExperimentArtifacts
+    ) -> dict[str, Any]:
+        artifacts.events_csv.write_text(
+            "timestamp,video_frame,tracking_id,event_type\n"
+            "00:00:14.151,354,39,IN\n"
+            "00:00:14.870,372,39,OUT\n"
+            "00:00:15.190,380,39,IN\n"
+            "00:00:20.000,500,40,IN\n",
+            encoding="utf-8",
+        )
+        return complete_summary()
+
+    ranked = run_experiments(
+        input_path=input_path,
+        matrix=matrix,
+        output_dir=tmp_path / "event_instability_output",
+        executor=fake_executor,
+    )
+
+    assert ranked[0]["rapid_same_track_event_count"] == 2
+    assert ranked[0]["rapid_same_track_reversal_count"] == 2
+    assert ranked[0]["rapid_same_track_event_tracks"] == 1
+    assert ranked[0]["event_instability_window_frames"] == 30
+
+
 def test_default_matrix_is_the_bounded_a_through_e_set() -> None:
     repository = Path(__file__).resolve().parents[1]
     matrix = load_experiment_matrix(
@@ -437,6 +586,40 @@ def test_default_matrix_is_the_bounded_a_through_e_set() -> None:
         ("full", "left_doorway", "right_doorway"),
         ("full", "left_doorway", "right_doorway"),
     ]
+
+
+def test_event_stability_matrices_are_bounded_and_use_matching_dimensions() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    matrices = [
+        load_experiment_matrix(
+            repository / "configs" / "experiments" / "event_stability_test_video.yaml"
+        ),
+        load_experiment_matrix(
+            repository / "configs" / "experiments" / "event_stability_bus_door_02.yaml"
+        ),
+    ]
+
+    assert [len(matrix.runs) for matrix in matrices] == [8, 8]
+    assert [run.name for run in matrices[0].runs] == [
+        run.name for run in matrices[1].runs
+    ]
+    for matrix in matrices:
+        assert all(run.enabled_views == ("full",) for run in matrix.runs)
+        assert all(run.precision == "fp32" for run in matrix.runs)
+        assert {run.tracker["zone_anchor"] for run in matrix.runs} == {
+            "bottom_center",
+            "center",
+            "top_center",
+        }
+        assert {run.tracker["event_cooldown_frames"] for run in matrix.runs} == {
+            0,
+            30,
+            45,
+        }
+        assert {run.tracker["zone_boundary_hysteresis"] for run in matrix.runs} == {
+            0.0,
+            0.01,
+        }
 
 
 def test_experiment_run_slug_is_stable() -> None:

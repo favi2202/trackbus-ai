@@ -4,9 +4,36 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from typing import Any
 
 BoundingBox = tuple[float, float, float, float]
+
+
+class AnchorMode(StrEnum):
+    """Supported box points for counting-zone membership."""
+
+    CENTER = "center"
+    BOTTOM_CENTER = "bottom_center"
+    TOP_CENTER = "top_center"
+
+
+def anchor_for_box(box: BoundingBox, mode: str | AnchorMode) -> tuple[float, float]:
+    """Return a named anchor without changing exclusion-anchor compatibility."""
+
+    try:
+        parsed = AnchorMode(mode)
+    except ValueError as exc:
+        raise ValueError(
+            "anchor mode must be center, bottom_center, or top_center"
+        ) from exc
+    left, top, right, bottom = box
+    x = (left + right) / 2.0
+    if parsed is AnchorMode.CENTER:
+        return x, (top + bottom) / 2.0
+    if parsed is AnchorMode.TOP_CENTER:
+        return x, top
+    return x, bottom
 
 
 def _validate_box(box: BoundingBox) -> None:
@@ -37,15 +64,20 @@ class Detection:
 
     @property
     def anchor(self) -> tuple[float, float]:
-        """Bottom-center anchor used by exclusions and counting."""
+        """Legacy bottom-center anchor used by exclusions and default counting."""
 
-        left, _top, right, bottom = self.bounding_box
-        return ((left + right) / 2.0, bottom)
+        return anchor_for_box(self.bounding_box, AnchorMode.BOTTOM_CENTER)
 
     @property
     def center(self) -> tuple[float, float]:
-        left, top, right, bottom = self.bounding_box
-        return ((left + right) / 2.0, (top + bottom) / 2.0)
+        return anchor_for_box(self.bounding_box, AnchorMode.CENTER)
+
+    @property
+    def top_center(self) -> tuple[float, float]:
+        return anchor_for_box(self.bounding_box, AnchorMode.TOP_CENTER)
+
+    def anchor_for(self, mode: str | AnchorMode) -> tuple[float, float]:
+        return anchor_for_box(self.bounding_box, mode)
 
     @property
     def source_views(self) -> tuple[str, ...]:
@@ -81,13 +113,18 @@ class TrackedDetection:
 
     @property
     def anchor(self) -> tuple[float, float]:
-        left, _top, right, bottom = self.bounding_box
-        return ((left + right) / 2.0, bottom)
+        return anchor_for_box(self.bounding_box, AnchorMode.BOTTOM_CENTER)
 
     @property
     def center(self) -> tuple[float, float]:
-        left, top, right, bottom = self.bounding_box
-        return ((left + right) / 2.0, (top + bottom) / 2.0)
+        return anchor_for_box(self.bounding_box, AnchorMode.CENTER)
+
+    @property
+    def top_center(self) -> tuple[float, float]:
+        return anchor_for_box(self.bounding_box, AnchorMode.TOP_CENTER)
+
+    def anchor_for(self, mode: str | AnchorMode) -> tuple[float, float]:
+        return anchor_for_box(self.bounding_box, mode)
 
     def with_box(self, box: BoundingBox, **metadata: Any) -> TrackedDetection:
         merged_metadata = dict(self.metadata)

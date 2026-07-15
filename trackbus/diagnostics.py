@@ -57,6 +57,7 @@ class TrackDiagnostic:
     current_stationary_run_frames: int = 0
     first_center: tuple[float, float] | None = None
     last_lane: DoorwayLane | None = None
+    last_in_corridor: bool = False
     last_center: tuple[float, float] | None = None
     last_heavy_overlap: bool = False
 
@@ -152,6 +153,7 @@ class DisappearedTrack:
     frame: int
     center: tuple[float, float]
     lane: DoorwayLane | None
+    in_corridor: bool
 
 
 class DoorwayDiagnostics:
@@ -173,6 +175,7 @@ class DoorwayDiagnostics:
         self._previous_people: dict[int, TrackedPerson] = {}
         self._current_people: dict[int, TrackedPerson] = {}
         self._current_lanes: dict[int, DoorwayLane | None] = {}
+        self._current_doorway_ids: set[int] = set()
         self._recently_disappeared: dict[int, DisappearedTrack] = {}
 
     def observe_frame(
@@ -181,7 +184,9 @@ class DoorwayDiagnostics:
         people: list[TrackedPerson],
         lanes: dict[int, DoorwayLane | None],
         box_lanes: dict[int, tuple[DoorwayLane, ...]],
+        corridor_memberships: dict[int, bool] | None = None,
     ) -> None:
+        corridor_memberships = corridor_memberships or {}
         current = {person.tracking_id: person for person in people}
         missing_ids = self._previous_people.keys() - current.keys()
         for tracking_id in missing_ids:
@@ -193,6 +198,7 @@ class DoorwayDiagnostics:
                 frame=frame_number - 1,
                 center=previous.center,
                 lane=memory.last_lane,
+                in_corridor=memory.last_in_corridor,
             )
 
         for person in people:
@@ -206,7 +212,13 @@ class DoorwayDiagnostics:
                     last_observed_frame=frame_number,
                 )
                 self.tracks[person.tracking_id] = memory
-                self._match_possible_restart(memory, person, lane, frame_number)
+                self._match_possible_restart(
+                    memory,
+                    person,
+                    lane,
+                    corridor_memberships.get(person.tracking_id, False),
+                    frame_number,
+                )
             else:
                 gap = frame_number - memory.last_observed_frame - 1
                 if gap > 0:
@@ -220,6 +232,7 @@ class DoorwayDiagnostics:
                 person,
                 lane,
                 box_lanes[person.tracking_id],
+                corridor_memberships.get(person.tracking_id, False),
                 consecutive=memory.observed_frames > 0 and gap == 0,
             )
             memory.last_observed_frame = frame_number
@@ -227,16 +240,21 @@ class DoorwayDiagnostics:
             self._recently_disappeared.pop(person.tracking_id, None)
 
         doorway_people = [
-            person for person in people if lanes[person.tracking_id] is not None
+            person
+            for person in people
+            if lanes[person.tracking_id] is not None
+            or corridor_memberships.get(person.tracking_id, False)
         ]
-        doorway_count = len(doorway_people)
-        self.maximum_people_in_doorway = max(
-            self.maximum_people_in_doorway, doorway_count
-        )
-        if doorway_count >= 2:
-            self.frames_with_multiple_people_in_doorway += 1
-        if self._observe_overlaps(doorway_people):
-            self.heavy_overlap_frame_count += 1
+        self._current_doorway_ids = {person.tracking_id for person in doorway_people}
+        if self.calibration.doorway_enabled:
+            doorway_count = len(doorway_people)
+            self.maximum_people_in_doorway = max(
+                self.maximum_people_in_doorway, doorway_count
+            )
+            if doorway_count >= 2:
+                self.frames_with_multiple_people_in_doorway += 1
+            if self._observe_overlaps(doorway_people):
+                self.heavy_overlap_frame_count += 1
 
         self._current_people = current
         self._current_lanes = lanes.copy()
@@ -249,12 +267,12 @@ class DoorwayDiagnostics:
         if memory is None or person is None:
             return
         memory.crossing_events.append(event.event_type.value)
-        if self._current_lanes.get(event.tracking_id) is None:
+        if event.tracking_id not in self._current_doorway_ids:
             return
         for other_id, other in self._current_people.items():
             if (
                 other_id == event.tracking_id
-                or self._current_lanes.get(other_id) is None
+                or other_id not in self._current_doorway_ids
             ):
                 continue
             if (
@@ -270,19 +288,74 @@ class DoorwayDiagnostics:
             self.tracks[tracking_id].to_dict(self.config, self.frame_diagonal)
             for tracking_id in sorted(self.tracks)
         ]
+        available = self.calibration.doorway_enabled
+        lanes_available = bool(self.calibration.lanes)
+        if not available:
+            for track in track_dicts:
+                for name in (
+                    "crossed_with_nearby_track",
+                    "nearby_tracking_ids_at_crossing",
+                    "maximum_iou_with_another_track",
+                    "overlap_frames",
+                    "heavy_overlap_frames",
+                    "disappeared_after_heavy_overlap",
+                ):
+                    track[name] = None
+        if not lanes_available:
+            for track in track_dicts:
+                for name in (
+                    "first_lane_observed",
+                    "last_lane_observed",
+                    "lanes_visited",
+                    "left_lane_observed_frames",
+                    "center_lane_observed_frames",
+                    "right_lane_observed_frames",
+                    "left_lane_detection_gap_frames",
+                    "center_lane_detection_gap_frames",
+                    "right_lane_detection_gap_frames",
+                    "unassigned_detection_gap_frames",
+                    "multi_lane_box_frames",
+                    "maximum_lanes_overlapped",
+                ):
+                    track[name] = None
         return {
-            "maximum_people_in_doorway": self.maximum_people_in_doorway,
+            "doorway_diagnostics_available": available,
+            "doorway_diagnostics_reason": (
+                None
+                if available
+                else "no_doorway_lane_or_crossing_corridor_calibration"
+            ),
+            "doorway_lane_diagnostics_available": lanes_available,
+            "doorway_lane_diagnostics_reason": (
+                None if lanes_available else "no_doorway_lane_calibration"
+            ),
+            "maximum_people_in_doorway": (
+                self.maximum_people_in_doorway if available else None
+            ),
             "frames_with_multiple_people_in_doorway": (
-                self.frames_with_multiple_people_in_doorway
+                self.frames_with_multiple_people_in_doorway if available else None
             ),
-            "maximum_doorway_pairwise_iou": round(self.maximum_doorway_pairwise_iou, 4),
-            "heavy_overlap_frame_count": self.heavy_overlap_frame_count,
-            "tracks_disappearing_after_heavy_overlap": sum(
-                track.disappeared_after_heavy_overlap for track in self.tracks.values()
+            "maximum_doorway_pairwise_iou": (
+                round(self.maximum_doorway_pairwise_iou, 4) if available else None
             ),
-            "possible_id_restart_count": sum(
-                track.possible_restart_of_tracking_id is not None
-                for track in self.tracks.values()
+            "heavy_overlap_frame_count": (
+                self.heavy_overlap_frame_count if available else None
+            ),
+            "tracks_disappearing_after_heavy_overlap": (
+                sum(
+                    track.disappeared_after_heavy_overlap
+                    for track in self.tracks.values()
+                )
+                if available
+                else None
+            ),
+            "possible_id_restart_count": (
+                sum(
+                    track.possible_restart_of_tracking_id is not None
+                    for track in self.tracks.values()
+                )
+                if available
+                else None
             ),
             "tracks_touching_source_edge": sum(
                 track.source_edge_touch_frames > 0 for track in self.tracks.values()
@@ -302,6 +375,7 @@ class DoorwayDiagnostics:
         person: TrackedPerson,
         lane: DoorwayLane | None,
         overlapping_lanes: tuple[DoorwayLane, ...],
+        in_corridor: bool,
         *,
         consecutive: bool,
     ) -> None:
@@ -314,6 +388,7 @@ class DoorwayDiagnostics:
                 memory.lanes_visited.append(lane)
             memory.lane_observed_frames[lane] += 1
         memory.last_lane = lane
+        memory.last_in_corridor = in_corridor
 
         if memory.first_center is None:
             memory.first_center = person.center
@@ -398,15 +473,18 @@ class DoorwayDiagnostics:
         memory: TrackDiagnostic,
         person: TrackedPerson,
         lane: DoorwayLane | None,
+        in_corridor: bool,
         frame_number: int,
     ) -> None:
-        if lane is None:
+        if lane is None and not in_corridor:
             return
         candidates: list[tuple[float, int, DisappearedTrack]] = []
         for tracking_id, disappeared in self._recently_disappeared.items():
             if frame_number - disappeared.frame > self.config.id_restart_window_frames:
                 continue
-            if disappeared.lane is not lane:
+            same_lane = lane is not None and disappeared.lane is lane
+            same_corridor = in_corridor and disappeared.in_corridor
+            if not (same_lane or same_corridor):
                 continue
             distance = (
                 math.dist(person.center, disappeared.center) / self.frame_diagonal

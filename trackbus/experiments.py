@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("trackbus.experiments")
 MATRIX_VERSION = 1
 MAX_EXPERIMENT_RUNS = 50
+EVENT_INSTABILITY_WINDOW_FRAMES = 30
 _SAFE_NAME = re.compile(r"[^a-z0-9]+")
 _STANDARD_YOLO_WEIGHT = re.compile(r"^yolo(?:v?\d+)[a-z0-9_-]*\.pt$", re.IGNORECASE)
 
@@ -49,6 +50,7 @@ _RUN_KEYS = {
     "model",
     "confidence",
     "image_size",
+    "precision",
     "tracker",
     "enabled_views",
     "detection_fusion",
@@ -57,6 +59,12 @@ _RUN_KEYS = {
 _TRACKER_KEYS = {
     "config",
     "minimum_zone_frames",
+    "minimum_origin_zone_frames",
+    "minimum_destination_zone_frames",
+    "maximum_transition_gap_frames",
+    "event_cooldown_frames",
+    "zone_anchor",
+    "zone_boundary_hysteresis",
     "stale_track_timeout",
     "track_high_thresh",
     "track_low_thresh",
@@ -72,7 +80,7 @@ _FUSION_KEYS = {
     "prefer_full_frame",
 }
 _APP_CONFIG_KEYS: dict[str, set[str] | None] = {
-    "model": {"path", "confidence", "imgsz", "half"},
+    "model": {"path", "confidence", "imgsz", "precision", "half"},
     "tracking": _TRACKER_KEYS - {"config"} | {"tracker"},
     "zones": {"outside", "inside"},
     "outputs": {
@@ -87,6 +95,7 @@ _APP_CONFIG_KEYS: dict[str, set[str] | None] = {
         "detection_roi",
         "inference_views",
         "doorway_lanes",
+        "crossing_corridor",
         "exclusion_polygons",
         "debug_calibration_overlay",
     },
@@ -146,6 +155,7 @@ class ExperimentRun:
     enabled_views: tuple[str, ...]
     detection_fusion: Mapping[str, Any]
     overrides: Mapping[str, Any]
+    precision: str | None = None
 
     @property
     def slug(self) -> str:
@@ -161,6 +171,7 @@ class ExperimentRun:
             "model": self.model,
             "confidence": self.confidence,
             "image_size": self.image_size,
+            "precision": self.precision,
             "tracker": deepcopy(dict(self.tracker)),
             "enabled_views": list(self.enabled_views),
             "detection_fusion": deepcopy(dict(self.detection_fusion)),
@@ -373,6 +384,18 @@ def _parse_run(
         raise ExperimentConfigError(
             f"'{name_prefix}.image_size' must be at least 32 pixels."
         )
+    precision_value = raw.get("precision")
+    precision: str | None = None
+    if precision_value is not None:
+        if not isinstance(precision_value, str):
+            raise ExperimentConfigError(
+                f"'{name_prefix}.precision' must be 'fp32' or 'fp16'."
+            )
+        precision = precision_value.strip().casefold()
+        if precision not in {"fp32", "fp16"}:
+            raise ExperimentConfigError(
+                f"'{name_prefix}.precision' must be 'fp32' or 'fp16'."
+            )
 
     tracker = _require_mapping(raw.get("tracker"), f"{name_prefix}.tracker")
     _reject_unknown_keys(tracker, _TRACKER_KEYS, f"{name_prefix}.tracker")
@@ -429,6 +452,14 @@ def _parse_run(
     overrides = _require_mapping(raw.get("overrides", {}), f"{name_prefix}.overrides")
     _validate_application_config_keys(overrides, f"{name_prefix}.overrides")
     _reject_protected_overrides(overrides, name_prefix)
+    override_model = overrides.get("model")
+    if precision is not None and isinstance(override_model, Mapping):
+        conflicting_precision = sorted(set(override_model) & {"precision", "half"})
+        if conflicting_precision:
+            raise ExperimentConfigError(
+                f"'{name_prefix}.overrides' cannot change the run's precision "
+                f"with model.{conflicting_precision[0]}."
+            )
 
     return ExperimentRun(
         name=name.strip(),
@@ -445,6 +476,7 @@ def _parse_run(
             "prefer_full_frame": prefer_full_frame,
         },
         overrides=deepcopy(dict(overrides)),
+        precision=precision,
     )
 
 
@@ -468,12 +500,19 @@ def resolve_run_configuration(
         str(tracker.pop("config")), matrix, kind="tracker configuration"
     )
     model_path = _resolve_contextual_path(run.model, matrix, kind="model")
+    model_overrides: dict[str, Any] = {
+        "path": model_path,
+        "confidence": run.confidence,
+        "imgsz": run.image_size,
+    }
+    if run.precision is not None:
+        # An explicit matrix precision supersedes the deprecated ``half`` key.
+        model_overrides["precision"] = run.precision
+        model_config = config.get("model")
+        if isinstance(model_config, dict):
+            model_config.pop("half", None)
     run_overrides: dict[str, Any] = {
-        "model": {
-            "path": model_path,
-            "confidence": run.confidence,
-            "imgsz": run.image_size,
-        },
+        "model": model_overrides,
         "tracking": {"tracker": tracker_path, **tracker},
         "camera": {
             # Explicit views replace, rather than silently reinterpret, v0.1's ROI.
@@ -694,18 +733,29 @@ def _successful_result(
         ).to_dict()
 
     unique_ids = _required_summary_int(summary, "unique_tracking_ids")
-    possible_restarts = _required_summary_int(
+    possible_restarts = _optional_summary_int(
         summary, "possible_id_restart_count", "possible_id_restarts"
     )
     likely_static = _required_summary_int(summary, "likely_static_track_count")
-    disappeared = _required_summary_int(
+    disappeared = _optional_summary_int(
         summary, "tracks_disappearing_after_heavy_overlap"
     )
     expected_crossings = expected_entered + expected_exited
     fragmentation_risk = max(0, unique_ids - expected_crossings)
-    false_event_risk = (
-        possible_restarts + likely_static + disappeared + fragmentation_risk
+    false_event_risk = sum(
+        value
+        for value in (
+            possible_restarts,
+            likely_static,
+            disappeared,
+            fragmentation_risk,
+        )
+        if isinstance(value, int)
     )
+    event_instability = _event_instability_metrics(artifacts.events_csv)
+    rapid_events = event_instability["rapid_same_track_event_count"]
+    if isinstance(rapid_events, int):
+        false_event_risk += rapid_events
 
     event_metrics = _event_metric_fields(event_evaluation)
     result: dict[str, Any] = {
@@ -729,6 +779,7 @@ def _successful_result(
         ),
         "fused_detections": _required_summary_int(summary, "fused_detections_total"),
         "unique_tracking_ids": unique_ids,
+        "doorway_diagnostics_available": summary.get("doorway_diagnostics_available"),
         "possible_id_restarts": possible_restarts,
         "frames_without_detections": _required_summary_int(
             summary,
@@ -740,6 +791,7 @@ def _successful_result(
         "tracks_disappearing_after_heavy_overlap": disappeared,
         "id_fragmentation_risk": fragmentation_risk,
         "false_event_risk_score": false_event_risk,
+        **event_instability,
         "processing_fps": _required_summary_float(
             summary, "average_fps", "processing_fps", positive=True
         ),
@@ -759,6 +811,78 @@ def _successful_result(
         "error": None,
     }
     return result
+
+
+def _event_instability_metrics(events_csv: Path) -> dict[str, int | None]:
+    """Measure rapid repeated events produced by one tracker identity.
+
+    The fixed window is deliberately identical across runs. Using each run's
+    cooldown would make the comparison window itself a tuned parameter.
+    Missing tracking IDs are reported as unavailable rather than as a
+    misleading zero.
+    """
+
+    unavailable: dict[str, int | None] = {
+        "rapid_same_track_event_count": None,
+        "rapid_same_track_reversal_count": None,
+        "rapid_same_track_event_tracks": None,
+        "event_instability_window_frames": EVENT_INSTABILITY_WINDOW_FRAMES,
+    }
+    if not events_csv.is_file():
+        return unavailable
+    try:
+        with events_csv.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = set(reader.fieldnames or ())
+            id_key = "tracking_id" if "tracking_id" in fieldnames else None
+            frame_key = (
+                "video_frame"
+                if "video_frame" in fieldnames
+                else "frame"
+                if "frame" in fieldnames
+                else None
+            )
+            direction_key = (
+                "event_type"
+                if "event_type" in fieldnames
+                else "direction"
+                if "direction" in fieldnames
+                else None
+            )
+            if id_key is None or frame_key is None or direction_key is None:
+                return unavailable
+            events_by_track: dict[str, list[tuple[int, str]]] = {}
+            for row in reader:
+                track_id = str(row.get(id_key, "")).strip()
+                direction = str(row.get(direction_key, "")).strip().upper()
+                if not track_id or direction not in {"IN", "OUT"}:
+                    continue
+                frame = int(str(row.get(frame_key, "")).strip())
+                events_by_track.setdefault(track_id, []).append((frame, direction))
+    except (OSError, csv.Error, TypeError, ValueError) as exc:
+        LOGGER.warning(
+            "Could not measure event instability from %s: %s", events_csv, exc
+        )
+        return unavailable
+
+    rapid_count = 0
+    reversal_count = 0
+    unstable_tracks: set[str] = set()
+    for track_id, events in events_by_track.items():
+        events.sort(key=lambda event: event[0])
+        for previous, current in zip(events, events[1:], strict=False):
+            frame_delta = current[0] - previous[0]
+            if 0 <= frame_delta <= EVENT_INSTABILITY_WINDOW_FRAMES:
+                rapid_count += 1
+                unstable_tracks.add(track_id)
+                if current[1] != previous[1]:
+                    reversal_count += 1
+    return {
+        "rapid_same_track_event_count": rapid_count,
+        "rapid_same_track_reversal_count": reversal_count,
+        "rapid_same_track_event_tracks": len(unstable_tracks),
+        "event_instability_window_frames": EVENT_INSTABILITY_WINDOW_FRAMES,
+    }
 
 
 def _failed_result(
@@ -877,11 +1001,16 @@ _LEADERBOARD_METRIC_FIELDS = (
     "person_detections",
     "fused_detections",
     "unique_tracking_ids",
+    "doorway_diagnostics_available",
     "possible_id_restarts",
     "frames_without_detections",
     "likely_static_tracks",
     "tracks_disappearing_after_heavy_overlap",
     "id_fragmentation_risk",
+    "rapid_same_track_event_count",
+    "rapid_same_track_reversal_count",
+    "rapid_same_track_event_tracks",
+    "event_instability_window_frames",
     "false_event_risk_score",
     "processing_fps",
     "processing_duration_seconds",
@@ -908,8 +1037,32 @@ def rank_results(
         name = str(item.get("name", ""))
         if has_frame_ground_truth:
             f1 = finite_number(item.get("event_f1"), -1.0)
-            return failed, -f1, count_error, risk, -fps, name
-        return failed, count_error, risk, -fps, name
+            false_positives = finite_number(item.get("event_false_positives"), math.inf)
+            recall = finite_number(item.get("event_recall"), -1.0)
+            crossing_error = finite_number(
+                item.get("total_crossing_count_error"), math.inf
+            )
+            event_instability = finite_number(
+                item.get("rapid_same_track_event_count"), risk
+            )
+            id_instability = finite_number(item.get("possible_id_restarts"), math.inf)
+            return (
+                failed,
+                -f1,
+                false_positives,
+                -recall,
+                count_error,
+                crossing_error,
+                event_instability,
+                id_instability,
+                risk,
+                -fps,
+                name,
+            )
+        event_instability = finite_number(
+            item.get("rapid_same_track_event_count"), risk
+        )
+        return failed, count_error, event_instability, risk, -fps, name
 
     return [deepcopy(dict(item)) for item in sorted(results, key=key)]
 
@@ -928,9 +1081,13 @@ def write_leaderboard(
     output_dir.mkdir(parents=True, exist_ok=True)
     ranked = rank_results(results, has_frame_ground_truth=has_frame_ground_truth)
     ranking_basis = (
-        "direction-aware event F1, count error, false-event risk, then FPS"
+        "direction-aware event F1, false positives, recall, direction count "
+        "error, rapid same-track event/ID instability, then FPS"
         if has_frame_ground_truth
-        else "aggregate direction count error, false-event risk, then FPS"
+        else (
+            "aggregate direction count error, rapid same-track event/ID "
+            "instability, false-event risk, then FPS"
+        )
     )
     payload = {
         "ranking_basis": ranking_basis,
@@ -1034,9 +1191,10 @@ def _render_report(
             ),
             "",
             "| Rank | Run | Mode | Status | IN | OUT | Direction error | Event F1 | "
-            "Raw det. | Fused det. | IDs | Restarts | Empty frames | FPS | Seconds |",
+            "Event FP | Recall | Rapid same-ID events | Raw det. | Fused det. | IDs | "
+            "Restarts | Empty frames | FPS | Seconds |",
             "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | "
-            "---: | ---: | ---: | ---: | ---: |",
+            "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for rank, result in enumerate(ranked, start=1):
@@ -1052,6 +1210,9 @@ def _render_report(
                     _format_metric(result.get("exited")),
                     _format_metric(result.get("aggregate_count_error")),
                     _format_metric(result.get("event_f1"), digits=3),
+                    _format_metric(result.get("event_false_positives")),
+                    _format_metric(result.get("event_recall"), digits=3),
+                    _format_metric(result.get("rapid_same_track_event_count")),
                     _format_metric(result.get("person_detections")),
                     _format_metric(result.get("fused_detections")),
                     _format_metric(result.get("unique_tracking_ids")),
@@ -1462,6 +1623,18 @@ def _required_summary_int(summary: Mapping[str, Any], *names: str) -> int:
             return parsed
     aliases = " or ".join(f"'{name}'" for name in names)
     raise ExperimentExecutionError(f"Run summary is missing required field {aliases}.")
+
+
+def _optional_summary_int(summary: Mapping[str, Any], *names: str) -> int | None:
+    """Validate a diagnostic integer while preserving explicit unavailability."""
+
+    for name in names:
+        if name not in summary:
+            continue
+        if summary[name] is None:
+            return None
+        return _required_summary_int(summary, name)
+    return None
 
 
 def _required_summary_float(

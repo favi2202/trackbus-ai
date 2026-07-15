@@ -69,6 +69,7 @@ class UltralyticsDetector:
         device: str | int,
         device_label: str,
         half: bool = False,
+        precision: str | None = None,
     ) -> None:
         if not 0.0 < confidence <= 1.0:
             raise ValueError("confidence must be greater than 0 and at most 1")
@@ -84,11 +85,23 @@ class UltralyticsDetector:
         self.image_size = image_size
         self.device = device
         self.device_label = device_label
-        self.half = bool(half and device_label.startswith("cuda"))
-        if half and not self.half:
+        requested_precision = precision or ("fp16" if half else "fp32")
+        if requested_precision not in {"fp32", "fp16"}:
+            raise ValueError("precision must be fp32 or fp16")
+        self.half = bool(
+            requested_precision == "fp16" and device_label.startswith("cuda")
+        )
+        self.precision = "fp16" if self.half else "fp32"
+        if requested_precision == "fp16" and not self.half:
             LOGGER.warning(
-                "Half precision was requested but is disabled on %s.", device_label
+                "FP16 was requested but is disabled on %s; using FP32.", device_label
             )
+        # Ultralytics 8.4.95 deprecated the per-prediction ``half`` argument.
+        # Its supported quantize=16 value selects FP16 inference; no INT8/export
+        # quantization is enabled. Resolve this once instead of warning per frame.
+        self._prediction_precision_options: dict[str, Any] = (
+            {"quantize": 16} if self.half else {}
+        )
         try:
             from ultralytics import YOLO
 
@@ -109,10 +122,13 @@ class UltralyticsDetector:
             "device": self.device,
             "verbose": False,
         }
-        # Ultralytics 8.4 warns if the deprecated false value is passed on every
-        # frame. Only send the option when FP16 was safely enabled on CUDA.
-        if self.half:
-            prediction_options["half"] = True
+        prediction_options.update(
+            getattr(
+                self,
+                "_prediction_precision_options",
+                {"quantize": 16} if getattr(self, "half", False) else {},
+            )
+        )
         try:
             results = self._model.predict(**prediction_options)
         except Exception as exc:

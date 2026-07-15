@@ -167,11 +167,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         device, device_label = resolve_device(config.device)
         LOGGER.info(
-            "Loading model %s on %s (confidence=%.3f, imgsz=%d)",
+            "Loading model %s on %s (confidence=%.3f, imgsz=%d, precision=%s)",
             config.model.path,
             device_label,
             config.model.confidence,
             config.model.imgsz,
+            config.model.precision,
         )
         detector = UltralyticsDetector(
             config.model.path,
@@ -179,7 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config.model.imgsz,
             device=device,
             device_label=device_label,
-            half=config.model.half,
+            precision=config.model.precision,
         )
         tracker = ByteTrackAdapter(
             tracker_config=config.tracking.tracker,
@@ -195,6 +196,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             capacity=config.capacity,
             initial_occupancy=config.initial_occupancy,
             minimum_zone_frames=config.tracking.minimum_zone_frames,
+            minimum_origin_zone_frames=(
+                config.tracking.effective_minimum_origin_zone_frames
+            ),
+            minimum_destination_zone_frames=(
+                config.tracking.effective_minimum_destination_zone_frames
+            ),
+            maximum_transition_gap_frames=(
+                config.tracking.maximum_transition_gap_frames
+            ),
+            event_cooldown_frames=config.tracking.event_cooldown_frames,
             stale_track_timeout=config.tracking.stale_track_timeout,
         )
         with (
@@ -216,8 +227,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_name=config.model.path,
                 model_confidence=config.model.confidence,
                 inference_image_size=config.model.imgsz,
+                model_precision=detector.precision,
                 camera_config=config.camera,
                 diagnostics_config=config.diagnostics,
+                zone_anchor=config.tracking.zone_anchor,
+                zone_boundary_hysteresis=(config.tracking.zone_boundary_hysteresis),
                 detection_exporter=detection_exporter,
             )
             summary = processor.process(input_path, output_path, show=args.show)

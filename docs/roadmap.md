@@ -54,6 +54,23 @@ The benchmark item must compare detector coverage, event counts, false-event and
 fragmentation indicators, and FPS. Matching `6 IN / 2 OUT` is not sufficient to
 declare a winner. Event F1 requires manually labelled event frames.
 
+## v0.2.1 - stable events and camera calibration
+
+- [x] Stable origin dwell, mandatory raw-neutral traversal, and destination
+  confirmation
+- [x] Destination latch, complete reverse re-arm, bounded gaps, and secondary
+  cooldown
+- [x] Centre, bottom-centre, and top-centre counting anchors
+- [x] Boundary stabilization without synthetic neutral-transition evidence
+- [x] Per-observation counter state and suppression-reason CSV diagnostics
+- [x] Explicitly unavailable doorway measurements when calibration is missing
+- [x] Crossing-corridor doorway diagnostics
+- [x] Interactive normalized camera-zone calibration with semantic YAML
+  preservation
+- [x] One-time precision migration and pinned CUDA FP16 path
+- [x] Two bounded, frame-labelled event-stability matrices
+- [x] Two-video before/after event evaluation
+
 ## Next - representative validation and detector evidence
 
 - Collect consented, privacy-reviewed videos from representative bus doors.

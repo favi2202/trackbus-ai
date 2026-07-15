@@ -119,6 +119,42 @@ but fusion and tracking did not turn them into more complete events. See
 `docs/v0.2-experiment-report.md` for the full aggregate-only leaderboard and
 runtime caveats.
 
+## v0.2.1 event-stability hypothesis
+
+The second labelled camera exposed a different failure mode from detector
+fragmentation. Tracking ID 39 emitted `IN` at frame 354, `OUT` at 372, and `IN`
+again at 380. Its roughly 550-638-pixel-tall box changed height enough for the
+bottom-centre anchor to visit both zones, while the box centre remained inside
+throughout the false reversal. The v0.2 state machine accepted three
+opposite-zone observations without requiring a neutral sample or reverse
+re-arm.
+
+The v0.2.1 hypothesis is deliberately model-independent: stable origin dwell,
+an actual raw-neutral observation, destination confirmation, a destination
+latch, and a complete reverse re-arm should remove this oscillation without
+inventing incomplete events. Cooldown is only a secondary guard. Boundary
+hysteresis cannot serve as neutral evidence, because doing so would quietly
+weaken the spatial rule it is meant to stabilize.
+
+Anchor choice is evaluated rather than assumed. Bottom-centre represents the
+prior behavior; centre may be more robust to height jitter in overhead boxes;
+top-centre may suit head-oriented detections but can miss the configured zones
+when used with full-body boxes. None is universally correct, so selection must
+use frame-labelled events from more than one camera.
+
+The two-video matrix confirms that warning. Safe defaults with bottom-centre
+preserve `test_video` F1 at 0.769 (5 TP, 0 FP, 3 FN). Centre drops that camera to
+0.400 F1. On `bus_door_02`, however, the calibrated centre anchor raises F1 from
+the v0.2 baseline 0.182 (1 TP, 4 FP, 5 FN) to 0.600 (3 TP, 1 FP, 3 FN), removes
+the false OUT, and produces no event for unstable ID 39. Its four predictions
+are all IN; three match labelled events.
+
+Longer dwell settings reduce test-video recall, while 1% boundary hysteresis
+does not improve F1 on either camera. A 45-frame cooldown ties the 30-frame
+default on both videos, so the shorter safe default is retained. These outcomes
+support per-camera anchor calibration and the complete transition state machine,
+not universal threshold changes.
+
 ## Threats to validity
 
 One short video from one fixed 320 x 240 viewpoint cannot establish accuracy,

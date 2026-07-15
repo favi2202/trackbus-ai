@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import IO
 
+from trackbus.counter import CounterSnapshot
 from trackbus.detection import Detection, TrackedDetection
 
 RAW_FIELDS = (
@@ -44,9 +45,21 @@ TRACK_FIELDS = (
     "class_id",
     "anchor_x",
     "anchor_y",
+    "anchor_mode",
     "current_zone",
+    "raw_zone",
+    "effective_zone",
+    "stable_zone",
     "current_lane",
     "counter_state",
+    "state_machine_state",
+    "pending_direction",
+    "origin_dwell_frames",
+    "destination_confirmation_frames",
+    "cooldown_remaining",
+    "detection_gap_frames",
+    "suppression_reasons",
+    "emitted_event",
     "contributing_views",
 )
 
@@ -168,12 +181,21 @@ class DetectionCsvExporter:
         zones: dict[int, str],
         lanes: dict[int, str | None],
         counter_states: dict[int, str | None],
+        *,
+        anchors: dict[int, tuple[float, float]] | None = None,
+        anchor_mode: str = "bottom_center",
+        counter_snapshots: dict[int, CounterSnapshot | None] | None = None,
     ) -> None:
         if self._tracks is None:
             return
+        anchors = anchors or {}
+        counter_snapshots = counter_snapshots or {}
         for tracked in tracks:
             left, top, right, bottom = tracked.bounding_box
-            anchor_x, anchor_y = tracked.anchor
+            anchor_x, anchor_y = anchors.get(
+                tracked.tracking_id, tracked.anchor_for(anchor_mode)
+            )
+            snapshot = counter_snapshots.get(tracked.tracking_id)
             self._tracks.writerow(
                 {
                     "frame": frame,
@@ -186,9 +208,49 @@ class DetectionCsvExporter:
                     "class_id": tracked.class_id,
                     "anchor_x": _number(anchor_x),
                     "anchor_y": _number(anchor_y),
+                    "anchor_mode": anchor_mode,
                     "current_zone": zones[tracked.tracking_id],
+                    "raw_zone": snapshot.raw_zone.value if snapshot else "",
+                    "effective_zone": (
+                        snapshot.effective_zone.value if snapshot else ""
+                    ),
+                    "stable_zone": (
+                        snapshot.stable_zone.value
+                        if snapshot and snapshot.stable_zone is not None
+                        else ""
+                    ),
                     "current_lane": lanes.get(tracked.tracking_id) or "",
                     "counter_state": counter_states.get(tracked.tracking_id) or "",
+                    "state_machine_state": (snapshot.state.value if snapshot else ""),
+                    "pending_direction": (
+                        snapshot.pending_direction.value
+                        if snapshot and snapshot.pending_direction is not None
+                        else ""
+                    ),
+                    "origin_dwell_frames": (
+                        snapshot.origin_dwell_frames if snapshot else ""
+                    ),
+                    "destination_confirmation_frames": (
+                        snapshot.destination_confirmation_frames if snapshot else ""
+                    ),
+                    "cooldown_remaining": (
+                        snapshot.cooldown_remaining if snapshot else ""
+                    ),
+                    "detection_gap_frames": (
+                        snapshot.detection_gap_frames if snapshot else ""
+                    ),
+                    "suppression_reasons": (
+                        "|".join(
+                            reason.value for reason in snapshot.suppression_reasons
+                        )
+                        if snapshot
+                        else ""
+                    ),
+                    "emitted_event": (
+                        snapshot.emitted_event.value
+                        if snapshot and snapshot.emitted_event is not None
+                        else ""
+                    ),
                     "contributing_views": "|".join(tracked.source_views),
                 }
             )

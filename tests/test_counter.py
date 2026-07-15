@@ -69,7 +69,11 @@ def test_standing_in_one_zone_is_not_repeatedly_counted() -> None:
 def test_duplicate_destination_observations_create_one_event() -> None:
     counter = PassengerCounter(capacity=40, minimum_zone_frames=2)
 
-    events = observe_many(counter, 3, [OUTSIDE] * 2 + [INSIDE] * 20)
+    events = observe_many(
+        counter,
+        3,
+        [OUTSIDE] * 2 + [TRANSITION] + [INSIDE] * 20,
+    )
 
     assert len(events) == 1
     assert counter.entered_total == 1
@@ -88,9 +92,27 @@ def test_brief_destination_touch_does_not_count() -> None:
 
 
 def test_occupancy_never_becomes_negative() -> None:
-    counter = PassengerCounter(capacity=40, minimum_zone_frames=1)
+    counter = PassengerCounter(
+        capacity=40,
+        minimum_zone_frames=1,
+        event_cooldown_frames=0,
+    )
 
-    observe_many(counter, 5, [INSIDE, OUTSIDE, INSIDE, OUTSIDE])
+    observe_many(
+        counter,
+        5,
+        [
+            INSIDE,
+            TRANSITION,
+            OUTSIDE,
+            OUTSIDE,
+            TRANSITION,
+            INSIDE,
+            INSIDE,
+            TRANSITION,
+            OUTSIDE,
+        ],
+    )
 
     assert counter.exited_total == 2
     assert counter.current_occupancy == 0
@@ -108,12 +130,17 @@ def test_stale_tracking_states_are_removed() -> None:
 
 
 def test_same_track_can_make_one_crossing_in_each_direction() -> None:
-    counter = PassengerCounter(capacity=40, initial_occupancy=1, minimum_zone_frames=2)
+    counter = PassengerCounter(
+        capacity=40,
+        initial_occupancy=1,
+        minimum_zone_frames=2,
+        event_cooldown_frames=0,
+    )
 
     events = observe_many(
         counter,
         11,
-        [OUTSIDE] * 2 + [INSIDE] * 2 + [OUTSIDE] * 2,
+        ([OUTSIDE] * 2 + [TRANSITION] + [INSIDE] * 4 + [TRANSITION] + [OUTSIDE] * 2),
     )
 
     assert [event.event_type for event in events] == [EventType.IN, EventType.OUT]

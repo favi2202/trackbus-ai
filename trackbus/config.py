@@ -25,13 +25,21 @@ class ModelConfig:
     path: str = "yolo11n.pt"
     confidence: float = 0.35
     imgsz: int = 640
+    precision: str = "fp32"
     half: bool = False
+    legacy_half_configured: bool = False
 
 
 @dataclass(frozen=True)
 class TrackingConfig:
     tracker: str = "bytetrack.yaml"
     minimum_zone_frames: int = 3
+    minimum_origin_zone_frames: int | None = None
+    minimum_destination_zone_frames: int | None = None
+    maximum_transition_gap_frames: int = 15
+    event_cooldown_frames: int = 30
+    zone_anchor: str = "bottom_center"
+    zone_boundary_hysteresis: float = 0.0
     stale_track_timeout: int = 90
     track_high_thresh: float | None = None
     track_low_thresh: float | None = None
@@ -39,6 +47,22 @@ class TrackingConfig:
     track_buffer: int | None = None
     match_thresh: float | None = None
     fuse_score: bool | None = None
+
+    @property
+    def effective_minimum_origin_zone_frames(self) -> int:
+        return (
+            self.minimum_zone_frames
+            if self.minimum_origin_zone_frames is None
+            else self.minimum_origin_zone_frames
+        )
+
+    @property
+    def effective_minimum_destination_zone_frames(self) -> int:
+        return (
+            self.minimum_zone_frames
+            if self.minimum_destination_zone_frames is None
+            else self.minimum_destination_zone_frames
+        )
 
     def bytetrack_overrides(self) -> dict[str, float | int | bool]:
         """Return only explicitly configured internal ByteTrack values."""
@@ -79,6 +103,7 @@ class CameraConfig:
     center_lane: NormalizedPolygon | None = None
     right_lane: NormalizedPolygon | None = None
     lane_anchor: str = "center"
+    crossing_corridor: NormalizedPolygon | None = None
     exclusion_polygons: tuple[NormalizedPolygon, ...] = ()
     debug_calibration_overlay: bool = False
 
@@ -373,13 +398,27 @@ def load_config(path: Path) -> AppConfig:
     diagnostics_raw = _mapping(root.get("diagnostics", {}), "diagnostics")
     fusion_raw = _mapping(root.get("detection_fusion", {}), "detection_fusion")
 
-    _reject_unknown_keys(model_raw, "model", {"path", "confidence", "imgsz", "half"})
+    _reject_unknown_keys(
+        model_raw,
+        "model",
+        {"path", "confidence", "imgsz", "precision", "half"},
+    )
+    if "precision" in model_raw and "half" in model_raw:
+        raise ConfigError(
+            "'model.precision' cannot be combined with deprecated 'model.half'."
+        )
     _reject_unknown_keys(
         tracking_raw,
         "tracking",
         {
             "tracker",
             "minimum_zone_frames",
+            "minimum_origin_zone_frames",
+            "minimum_destination_zone_frames",
+            "maximum_transition_gap_frames",
+            "event_cooldown_frames",
+            "zone_anchor",
+            "zone_boundary_hysteresis",
             "stale_track_timeout",
             "track_high_thresh",
             "track_low_thresh",
@@ -409,6 +448,7 @@ def load_config(path: Path) -> AppConfig:
             "detection_roi",
             "inference_views",
             "doorway_lanes",
+            "crossing_corridor",
             "exclusion_polygons",
             "debug_calibration_overlay",
         },
@@ -450,6 +490,17 @@ def load_config(path: Path) -> AppConfig:
         else ()
     )
 
+    legacy_half = (
+        _bool(model_raw["half"], "model.half") if "half" in model_raw else None
+    )
+    model_precision = (
+        "fp16"
+        if legacy_half is True
+        else "fp32"
+        if legacy_half is False
+        else str(model_raw.get("precision", "fp32")).strip().lower()
+    )
+
     try:
         config = AppConfig(
             model=ModelConfig(
@@ -458,13 +509,38 @@ def load_config(path: Path) -> AppConfig:
                     model_raw.get("confidence", 0.35), "model.confidence"
                 ),
                 imgsz=_int(model_raw.get("imgsz", 640), "model.imgsz"),
-                half=_bool(model_raw.get("half", False), "model.half"),
+                precision=model_precision,
+                half=model_precision == "fp16",
+                legacy_half_configured=legacy_half is not None,
             ),
             tracking=TrackingConfig(
                 tracker=str(tracking_raw.get("tracker", "bytetrack.yaml")),
                 minimum_zone_frames=_int(
                     tracking_raw.get("minimum_zone_frames", 3),
                     "tracking.minimum_zone_frames",
+                ),
+                minimum_origin_zone_frames=_optional_int(
+                    tracking_raw.get("minimum_origin_zone_frames"),
+                    "tracking.minimum_origin_zone_frames",
+                ),
+                minimum_destination_zone_frames=_optional_int(
+                    tracking_raw.get("minimum_destination_zone_frames"),
+                    "tracking.minimum_destination_zone_frames",
+                ),
+                maximum_transition_gap_frames=_int(
+                    tracking_raw.get("maximum_transition_gap_frames", 15),
+                    "tracking.maximum_transition_gap_frames",
+                ),
+                event_cooldown_frames=_int(
+                    tracking_raw.get("event_cooldown_frames", 30),
+                    "tracking.event_cooldown_frames",
+                ),
+                zone_anchor=str(
+                    tracking_raw.get("zone_anchor", "bottom_center")
+                ).strip(),
+                zone_boundary_hysteresis=_float(
+                    tracking_raw.get("zone_boundary_hysteresis", 0.0),
+                    "tracking.zone_boundary_hysteresis",
                 ),
                 stale_track_timeout=_int(
                     tracking_raw.get("stale_track_timeout", 90),
@@ -531,6 +607,10 @@ def load_config(path: Path) -> AppConfig:
                     lanes_raw.get("right_lane"), "camera.doorway_lanes.right_lane"
                 ),
                 lane_anchor=str(lanes_raw.get("anchor", "center")),
+                crossing_corridor=_optional_polygon(
+                    camera_raw.get("crossing_corridor"),
+                    "camera.crossing_corridor",
+                ),
                 exclusion_polygons=_polygon_collection(
                     camera_raw.get("exclusion_polygons", []),
                     "camera.exclusion_polygons",
@@ -639,6 +719,8 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("'model.confidence' must be greater than 0 and at most 1.")
     if config.model.imgsz < 32:
         raise ConfigError("'model.imgsz' must be at least 32 pixels.")
+    if config.model.precision not in {"fp32", "fp16"}:
+        raise ConfigError("'model.precision' must be fp32 or fp16.")
     if config.camera.detection_roi is not None and config.camera.inference_views:
         raise ConfigError(
             "'camera.detection_roi' is deprecated and cannot be combined with "
@@ -655,6 +737,30 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("'tracking.tracker' cannot be empty.")
     if config.tracking.minimum_zone_frames < 1:
         raise ConfigError("'tracking.minimum_zone_frames' must be at least 1.")
+    if config.tracking.effective_minimum_origin_zone_frames < 1:
+        raise ConfigError("'tracking.minimum_origin_zone_frames' must be at least 1.")
+    if config.tracking.effective_minimum_destination_zone_frames < 1:
+        raise ConfigError(
+            "'tracking.minimum_destination_zone_frames' must be at least 1."
+        )
+    if config.tracking.maximum_transition_gap_frames < 0:
+        raise ConfigError(
+            "'tracking.maximum_transition_gap_frames' cannot be negative."
+        )
+    if config.tracking.event_cooldown_frames < 0:
+        raise ConfigError("'tracking.event_cooldown_frames' cannot be negative.")
+    if config.tracking.zone_anchor not in {
+        "center",
+        "bottom_center",
+        "top_center",
+    }:
+        raise ConfigError(
+            "'tracking.zone_anchor' must be center, bottom_center, or top_center."
+        )
+    if not 0.0 <= config.tracking.zone_boundary_hysteresis <= 0.10:
+        raise ConfigError(
+            "'tracking.zone_boundary_hysteresis' must be between 0 and 0.10."
+        )
     if config.tracking.stale_track_timeout < 1:
         raise ConfigError("'tracking.stale_track_timeout' must be at least 1.")
     for name, value in (
@@ -754,6 +860,12 @@ def configuration_warnings(config: AppConfig) -> tuple[str, ...]:
     """Return actionable, deterministic calibration warnings."""
 
     messages: list[str] = []
+    if config.model.legacy_half_configured:
+        messages.append(
+            "model.half is deprecated in TrackBus configuration; use "
+            f"model.precision: {config.model.precision} instead. The setting was "
+            "converted once at startup."
+        )
     if config.camera.detection_roi is not None:
         messages.append(
             "camera.detection_roi is deprecated; it is treated as the sole "
@@ -783,6 +895,7 @@ def configuration_warnings(config: AppConfig) -> tuple[str, ...]:
                 config.camera.left_lane,
                 config.camera.center_lane,
                 config.camera.right_lane,
+                config.camera.crossing_corridor,
             )
             if polygon is not None
         ),

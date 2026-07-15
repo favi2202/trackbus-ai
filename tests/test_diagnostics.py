@@ -75,6 +75,70 @@ def test_overlap_disappearance_restart_and_nearby_crossing() -> None:
     assert tracks[3]["possible_restart_of_tracking_id"] == 1
 
 
+def test_doorway_metrics_are_unavailable_without_lane_or_corridor() -> None:
+    diagnostics = DoorwayDiagnostics(
+        FrameCalibration(CameraConfig(), 100, 100), DiagnosticsConfig()
+    )
+    tracked = person(1, (40.0, 20.0, 60.0, 60.0))
+
+    diagnostics.observe_frame(0, [tracked], {1: None}, {1: ()}, {1: False})
+
+    summary = diagnostics.summary()
+    assert summary["doorway_diagnostics_available"] is False
+    assert summary["doorway_diagnostics_reason"] == (
+        "no_doorway_lane_or_crossing_corridor_calibration"
+    )
+    assert summary["maximum_people_in_doorway"] is None
+    assert summary["frames_with_multiple_people_in_doorway"] is None
+    assert summary["doorway_lane_diagnostics_available"] is False
+    assert summary["possible_id_restart_count"] is None
+
+
+def test_crossing_corridor_enables_doorway_metrics_without_lanes() -> None:
+    camera = FrameCalibration(
+        CameraConfig(
+            crossing_corridor=(
+                (0.2, 0.0),
+                (0.8, 0.0),
+                (0.8, 1.0),
+                (0.2, 1.0),
+            )
+        ),
+        100,
+        100,
+    )
+    diagnostics = DoorwayDiagnostics(camera, DiagnosticsConfig())
+    tracked = person(1, (40.0, 20.0, 60.0, 60.0))
+
+    diagnostics.observe_frame(
+        0,
+        [tracked],
+        {1: None},
+        {1: ()},
+        {1: camera.corridor_contains(tracked.anchor)},
+    )
+    diagnostics.observe_frame(1, [], {}, {}, {})
+    replacement = person(2, (41.0, 20.0, 61.0, 60.0))
+    diagnostics.observe_frame(
+        2,
+        [replacement],
+        {2: None},
+        {2: ()},
+        {2: camera.corridor_contains(replacement.anchor)},
+    )
+
+    summary = diagnostics.summary()
+    assert summary["doorway_diagnostics_available"] is True
+    assert summary["doorway_diagnostics_reason"] is None
+    assert summary["maximum_people_in_doorway"] == 1
+    assert summary["doorway_lane_diagnostics_available"] is False
+    track = summary["track_diagnostics"][0]
+    assert track["left_lane_observed_frames"] is None
+    assert track["multi_lane_box_frames"] is None
+    tracks = {item["tracking_id"]: item for item in summary["track_diagnostics"]}
+    assert tracks[2]["possible_restart_of_tracking_id"] == 1
+
+
 def test_wide_multi_lane_box_is_only_reported() -> None:
     diagnostics = DoorwayDiagnostics(calibration(), DiagnosticsConfig())
 

@@ -109,7 +109,11 @@ def test_video_pipeline_writes_all_artifacts(tmp_path: Path) -> None:
     assert saved_summary["unique_tracking_ids"] == 1
     assert saved_summary["detection_roi_enabled"] is False
     assert saved_summary["excluded_person_detections_total"] == 0
-    assert saved_summary["maximum_people_in_doorway"] == 0
+    assert saved_summary["maximum_people_in_doorway"] is None
+    assert saved_summary["doorway_diagnostics_available"] is False
+    assert saved_summary["doorway_diagnostics_reason"] == (
+        "no_doorway_lane_or_crossing_corridor_calibration"
+    )
 
 
 def test_video_pipeline_crops_roi_and_counts_with_source_coordinates(

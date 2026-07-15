@@ -22,7 +22,7 @@ from trackbus.config import (
     resolve_inference_views,
 )
 from trackbus.counter import PassengerCounter
-from trackbus.detection import Detection, TrackedDetection
+from trackbus.detection import AnchorMode, Detection, TrackedDetection
 from trackbus.detection_export import DetectionCsvExporter
 from trackbus.diagnostics import DoorwayDiagnostics
 from trackbus.event_logger import EventLogger
@@ -60,6 +60,7 @@ class ProcessingSummary:
     model_used: str
     confidence_threshold: float
     inference_image_size: int
+    model_precision: str
     device_used: str
     tracker_backend: str
     tracker_config_path: str | None
@@ -85,6 +86,11 @@ class ProcessingSummary:
     detection_roi_enabled: bool
     detection_roi_normalized: tuple[float, float, float, float] | None
     excluded_person_detections_total: int
+    zone_anchor: str
+    zone_boundary_hysteresis: float
+    event_stability_settings: dict[str, Any]
+    event_suppression_counts: dict[str, int]
+    crossing_corridor_configured: bool
     doorway_diagnostics: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,8 +113,11 @@ class VideoProcessor:
         model_name: str,
         model_confidence: float,
         inference_image_size: int,
+        model_precision: str = "fp32",
         camera_config: CameraConfig,
         diagnostics_config: DiagnosticsConfig,
+        zone_anchor: str = "bottom_center",
+        zone_boundary_hysteresis: float = 0.0,
         detector: DetectorBackend | None = None,
         fusion: DetectionFusion | None = None,
         inference_views: tuple[InferenceViewConfig, ...] | None = None,
@@ -125,8 +134,11 @@ class VideoProcessor:
         self.model_name = model_name
         self.model_confidence = model_confidence
         self.inference_image_size = inference_image_size
+        self.model_precision = model_precision
         self.camera_config = camera_config
         self.diagnostics_config = diagnostics_config
+        self.zone_anchor = AnchorMode(zone_anchor)
+        self.zone_boundary_hysteresis = zone_boundary_hysteresis
         self.inference_view_configs = inference_views or resolve_inference_views(
             camera_config
         )
@@ -281,19 +293,40 @@ class VideoProcessor:
                     )
                     for person in people
                 }
+                zone_anchors = {
+                    person.tracking_id: person.anchor_for(self.zone_anchor)
+                    for person in people
+                }
+                corridor_memberships = {
+                    person.tracking_id: calibration.corridor_contains(
+                        zone_anchors[person.tracking_id]
+                    )
+                    for person in people
+                }
                 doorway_diagnostics.observe_frame(
-                    frame_number, people, lanes, box_lanes
+                    frame_number,
+                    people,
+                    lanes,
+                    box_lanes,
+                    corridor_memberships,
                 )
                 memberships: dict[int, ZoneMembership] = {}
 
                 for person in people:
-                    membership = zones.membership(person.anchor)
+                    classification = zones.classify(
+                        zone_anchors[person.tracking_id],
+                        self.zone_boundary_hysteresis,
+                    )
+                    membership = classification.effective
                     memberships[person.tracking_id] = membership
                     trajectories[person.tracking_id].append(
                         tuple(int(value) for value in person.center)
                     )
                     event = self.counter.observe(
-                        person.tracking_id, membership, frame_number
+                        person.tracking_id,
+                        membership,
+                        frame_number,
+                        raw_zone=classification.raw,
                     )
                     if event is not None:
                         doorway_diagnostics.record_crossing(event)
@@ -335,6 +368,14 @@ class VideoProcessor:
                         )
                         for person in people
                     },
+                    anchors=zone_anchors,
+                    anchor_mode=self.zone_anchor.value,
+                    counter_snapshots={
+                        person.tracking_id: self.counter.track_snapshot(
+                            person.tracking_id
+                        )
+                        for person in people
+                    },
                 )
 
                 annotated = self._annotate(
@@ -342,6 +383,7 @@ class VideoProcessor:
                     zones,
                     people,
                     memberships,
+                    zone_anchors,
                     calibration,
                     lanes,
                     excluded,
@@ -356,7 +398,7 @@ class VideoProcessor:
 
                 if show:
                     try:
-                        cv2.imshow("TrackBus v0.2.0 - press q to stop", annotated)
+                        cv2.imshow("TrackBus v0.2.1 - press q to stop", annotated)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             LOGGER.info("Preview stopped by user.")
                             break
@@ -401,6 +443,7 @@ class VideoProcessor:
             model_used=self.model_name,
             confidence_threshold=self.model_confidence,
             inference_image_size=self.inference_image_size,
+            model_precision=self.model_precision,
             device_used=getattr(self.tracker, "device_label", "unknown"),
             tracker_backend=type(self.tracker).__name__,
             tracker_config_path=getattr(self.tracker, "tracker_config", None),
@@ -439,6 +482,22 @@ class VideoProcessor:
             detection_roi_enabled=calibration.roi.enabled,
             detection_roi_normalized=self.camera_config.detection_roi,
             excluded_person_detections_total=excluded_person_detections_total,
+            zone_anchor=self.zone_anchor.value,
+            zone_boundary_hysteresis=self.zone_boundary_hysteresis,
+            event_stability_settings={
+                "minimum_origin_zone_frames": (self.counter.minimum_origin_zone_frames),
+                "minimum_destination_zone_frames": (
+                    self.counter.minimum_destination_zone_frames
+                ),
+                "maximum_transition_gap_frames": (
+                    self.counter.maximum_transition_gap_frames
+                ),
+                "event_cooldown_frames": self.counter.event_cooldown_frames,
+            },
+            event_suppression_counts=self.counter.suppression_totals(),
+            crossing_corridor_configured=(
+                self.camera_config.crossing_corridor is not None
+            ),
             doorway_diagnostics=diagnostic_summary,
         )
         self.event_logger.write_summary(summary.to_dict())
@@ -489,6 +548,7 @@ class VideoProcessor:
         zones: PixelZones,
         people: list[TrackedDetection],
         memberships: dict[int, ZoneMembership],
+        zone_anchors: dict[int, tuple[float, float]],
         calibration: FrameCalibration,
         lanes: dict[int, DoorwayLane | None],
         excluded: list[Detection] | list[TrackedDetection],
@@ -547,7 +607,7 @@ class VideoProcessor:
                 f"{state_text}{lane_text}{view_text}{restart_text}"
             )
             _text_with_background(annotated, label, (left, max(18, top - 7)), color)
-            anchor = tuple(int(value) for value in person.anchor)
+            anchor = tuple(int(value) for value in zone_anchors[person.tracking_id])
             cv2.circle(annotated, anchor, 4, color, -1)
             if visual_debug:
                 points = np.asarray(trajectories[person.tracking_id], dtype=np.int32)
@@ -641,6 +701,14 @@ def _draw_calibration_overlay(
         color = lane_colors[lane]
         cv2.polylines(frame, [polygon], True, color, 2)
         _zone_label(frame, polygon, lane.value.upper(), color)
+    if calibration.crossing_corridor is not None:
+        cv2.polylines(frame, [calibration.crossing_corridor], True, (180, 220, 60), 2)
+        _zone_label(
+            frame,
+            calibration.crossing_corridor,
+            "CROSSING CORRIDOR",
+            (180, 220, 60),
+        )
     for index, polygon in enumerate(calibration.exclusions):
         cv2.polylines(frame, [polygon], True, (40, 40, 230), 2)
         _zone_label(frame, polygon, f"EXCLUSION {index + 1}", (40, 40, 230))

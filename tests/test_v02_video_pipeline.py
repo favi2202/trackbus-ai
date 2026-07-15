@@ -20,12 +20,12 @@ from trackbus.fusion import NmsDetectionFusion
 from trackbus.video_processor import VideoProcessor
 
 
-def _video(path: Path) -> None:
+def _video(path: Path, frame_count: int = 3) -> None:
     writer = cv2.VideoWriter(
         str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (100, 100)
     )
     assert writer.isOpened()
-    for _ in range(3):
+    for _ in range(frame_count):
         writer.write(np.zeros((100, 100, 3), dtype=np.uint8))
     writer.release()
 
@@ -36,12 +36,15 @@ class SequencedDetector:
 
     def detect(self, _image: np.ndarray, *, source_view: str) -> list[Detection]:
         excluded = Detection((0.0, 60.0, 20.0, 80.0), 0.8, 0, source_view)
-        normal = (
-            Detection((40.0, 5.0, 60.0, 30.0), 0.9, 0, source_view)
-            if self.frame == 0
-            else Detection((40.0, 60.0, 60.0, 80.0), 0.9, 0, source_view)
-        )
-        detections = [excluded, normal] if self.frame != 1 else [excluded]
+        normal_boxes = {
+            0: (40.0, 5.0, 60.0, 30.0),
+            2: (40.0, 35.0, 60.0, 55.0),
+            3: (40.0, 60.0, 60.0, 80.0),
+        }
+        normal_box = normal_boxes.get(self.frame)
+        detections = [excluded]
+        if normal_box is not None:
+            detections.append(Detection(normal_box, 0.9, 0, source_view))
         self.frame += 1
         return detections
 
@@ -96,7 +99,7 @@ def test_explicit_pipeline_excludes_then_fuses_and_tracks_once_per_frame(
 ) -> None:
     input_path = tmp_path / "input.avi"
     output_path = tmp_path / "output.mp4"
-    _video(input_path)
+    _video(input_path, frame_count=4)
     raw_path = tmp_path / "raw.csv"
     fused_path = tmp_path / "fused.csv"
     tracks_path = tmp_path / "tracks.csv"
@@ -136,13 +139,13 @@ def test_explicit_pipeline_excludes_then_fuses_and_tracks_once_per_frame(
             detection_exporter=exporter,
         ).process(input_path, output_path)
 
-    assert fusion.received_counts == [1, 0, 1]
-    assert tracker.received_counts == [1, 0, 1]
-    assert summary.tracker_updates == summary.processed_frames == 3
+    assert fusion.received_counts == [1, 0, 1, 1]
+    assert tracker.received_counts == [1, 0, 1, 1]
+    assert summary.tracker_updates == summary.processed_frames == 4
     assert summary.entered_total == 1
-    assert summary.raw_person_detections_total == 5
-    assert summary.fused_detections_total == 2
-    assert summary.excluded_person_detections_total == 3
+    assert summary.raw_person_detections_total == 7
+    assert summary.fused_detections_total == 3
+    assert summary.excluded_person_detections_total == 4
 
     with raw_path.open(encoding="utf-8", newline="") as file:
         raw_rows = list(csv.DictReader(file))
@@ -150,15 +153,36 @@ def test_explicit_pipeline_excludes_then_fuses_and_tracks_once_per_frame(
         fused_rows = list(csv.DictReader(file))
     with tracks_path.open(encoding="utf-8", newline="") as file:
         track_rows = list(csv.DictReader(file))
-    assert len(raw_rows) == 5
+    assert len(raw_rows) == 7
     assert "timestamp" in raw_rows[0]
-    assert sum(row["excluded"] == "true" for row in raw_rows) == 3
-    assert len(fused_rows) == 2
+    assert sum(row["excluded"] == "true" for row in raw_rows) == 4
+    assert len(fused_rows) == 3
     assert fused_rows[0]["contributing_views"] == "full"
     assert '"fusion_method": "nms"' in fused_rows[0]["fusion_metadata"]
-    assert len(track_rows) == 2
-    assert [row["current_zone"] for row in track_rows] == ["outside", "inside"]
-    assert [row["counter_state"] for row in track_rows] == ["outside", "inside"]
+    assert len(track_rows) == 3
+    assert [row["current_zone"] for row in track_rows] == [
+        "outside",
+        "transition",
+        "inside",
+    ]
+    assert [row["counter_state"] for row in track_rows] == [
+        "outside",
+        "transitioning_in",
+        "inside",
+    ]
+    assert {row["anchor_mode"] for row in track_rows} == {"bottom_center"}
+    assert [row["raw_zone"] for row in track_rows] == [
+        "outside",
+        "transition",
+        "inside",
+    ]
+    assert [row["stable_zone"] for row in track_rows] == [
+        "outside",
+        "outside",
+        "inside",
+    ]
+    assert track_rows[1]["pending_direction"] == "IN"
+    assert track_rows[2]["emitted_event"] == "IN"
 
 
 def test_detection_csv_exporter_creates_nothing_when_disabled(
@@ -177,6 +201,32 @@ def test_detection_csv_exporter_creates_nothing_when_disabled(
         exporter.record_tracks(0, [], {}, {}, {})
 
     assert not any(path.exists() for path in paths)
+
+
+def test_track_exporter_fallback_anchor_matches_labeled_mode(tmp_path: Path) -> None:
+    paths = (tmp_path / "raw.csv", tmp_path / "fused.csv", tmp_path / "tracks.csv")
+    tracked = TrackedDetection(7, (10.0, 20.0, 30.0, 60.0), 0.9)
+
+    with DetectionCsvExporter(
+        enabled=True,
+        raw_path=paths[0],
+        fused_path=paths[1],
+        tracks_path=paths[2],
+    ) as exporter:
+        exporter.record_tracks(
+            0,
+            [tracked],
+            {7: "outside"},
+            {7: None},
+            {7: "outside"},
+            anchor_mode="top_center",
+        )
+
+    with paths[2].open(encoding="utf-8", newline="") as file:
+        row = next(csv.DictReader(file))
+    assert row["anchor_mode"] == "top_center"
+    assert row["anchor_x"] == "20.000"
+    assert row["anchor_y"] == "20.000"
 
 
 def test_tracker_boxes_collapsed_outside_source_frame_are_not_counted(

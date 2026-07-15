@@ -1,6 +1,6 @@
-# TrackBus v0.2 architecture
+# TrackBus v0.2.1 architecture
 
-TrackBus v0.2 is a sequential, source-frame pipeline. It separates prediction
+TrackBus v0.2.1 is a sequential, source-frame pipeline. It separates prediction
 from tracking so several overlapping detector inputs can contribute to one
 coherent tracking timeline. The design remains intentionally local and small:
 there is no service, database, identity system, or distributed processing layer.
@@ -28,7 +28,8 @@ decoded source frame
                                       |
                   temporary IDs and tracked source-coordinate boxes
                                       |
-       zones + lanes + conservative counter + diagnostics + annotation
+       configurable anchor + stabilized zones + latched counter
+                  + diagnostics + annotation
 ```
 
 The same tracker update happens with an empty `N x 6` detection input when no
@@ -40,8 +41,8 @@ ByteTrack instance exactly once. There is never a tracker per view.
 `Detection` represents one untracked prediction with an `xyxy` box, confidence,
 class ID, source-view name, contributing views, and optional metadata.
 `TrackedDetection` adds a temporary tracking ID while retaining confidence,
-class, box, view provenance, and metadata. Both expose center and bottom-center
-anchors.
+class, box, view provenance, and metadata. Both expose centre, bottom-centre,
+and top-centre anchors.
 
 Three small protocols separate responsibilities:
 
@@ -60,17 +61,19 @@ without loading a model, downloading weights, or importing a real tracker.
   bounding-box types.
 - `interfaces.py` defines the detector, fusion, and tracker protocols.
 - `detector.py` wraps person-only `YOLO.predict`, device selection, confidence,
-  image size, trusted model input, and safe CUDA-only half precision.
+  image size, trusted model input, and validated CUDA-only FP16 precision.
 - `views.py` resolves normalized views into pixel crops, invokes the detector for
   each enabled view, translates boxes, and clips them to source boundaries.
-- `calibration.py` resolves source-coordinate lanes and exclusions and tests the
-  configured anchor against known static polygons.
+- `calibration.py` resolves source-coordinate lanes, crossing corridor, and
+  exclusions and applies the established bottom-centre exclusion anchor.
 - `fusion.py` implements class-aware greedy NMS and preserves contributing-view
   and suppression metadata.
 - `tracker.py` isolates the version-sensitive Ultralytics `BYTETracker` API and
   converts fused detections into tracked records.
-- `zones.py` scales normalized counting polygons and classifies anchors.
-- `counter.py` owns the model-independent per-ID transition state machine.
+- `zones.py` scales normalized counting polygons and records raw plus
+  boundary-stabilized anchor classifications.
+- `counter.py` owns the model-independent per-ID dwell, neutral-traversal,
+  confirmation, latch, gap, and cooldown state machine.
 - `diagnostics.py` observes gaps, overlaps, lanes, border contact, likely-static
   behavior, large boxes, and possible ID restarts without changing counts.
 - `detection_export.py` optionally streams raw, fused, and tracked frame-level
@@ -79,6 +82,7 @@ without loading a model, downloading weights, or importing a real tracker.
 - `video_processor.py` decodes frames, executes stages in their required order,
   annotates the unchanged source frame, and encodes output.
 - `annotate_events.py` provides human-authored, resumable event labels.
+- `calibrate_camera.py` provides model-free, normalized camera-zone editing.
 - `evaluation.py` performs direction-aware one-to-one event matching or clearly
   limited aggregate-only evaluation.
 - `experiments.py` resolves bounded YAML matrices, runs the public processing
@@ -93,9 +97,12 @@ returned by the model. Empty `boxes` results become an empty list. Standard
 Ultralytics weight names and trusted local paths are supported; explicit HTTP or
 HTTPS model URLs are rejected.
 
-Device resolution accepts CPU, CUDA, a CUDA index, or automatic selection. FP16
-is passed to Ultralytics only when it was requested and the selected device is
-CUDA. It is disabled with a warning on CPU.
+Device resolution accepts CPU, CUDA, a CUDA index, or automatic selection. FP32
+is the default. With pinned Ultralytics 8.4.95, requested FP16 uses the supported
+`quantize=16` prediction form only on CUDA; this selects FP16 and does not enable
+INT8/export quantization. CPU requests downgrade once to FP32. The deprecated
+configuration key `half` is converted once at startup and never forwarded per
+frame.
 
 ## Coordinate flow and views
 
@@ -127,9 +134,9 @@ translated raw -> classify excluded -> fuse included only -> track
 
 TrackBus does not infer static exclusions. Likely-static behavior remains a
 diagnostic signal. Configuration loading warns when an exclusion overlaps a
-counting zone or configured passenger lane because such a polygon can erase real
-passenger paths. Runtime pixel calibration rejects configured lane overlap as a
-stronger safeguard.
+counting zone, corridor, or configured passenger lane because such a polygon
+can erase real passenger paths. Runtime pixel calibration rejects configured
+lane or corridor overlap as a stronger safeguard.
 
 ## Detection fusion
 
@@ -185,12 +192,26 @@ path always assembles prediction, fusion, and explicit tracking separately.
 Each active tracking ID has a stable side and one of these states: `UNKNOWN`,
 `OUTSIDE`, `TRANSITIONING_IN`, `INSIDE`, or `TRANSITIONING_OUT`.
 
-The first confirmed zone establishes the origin and never creates an event. A
-different destination must be observed for `minimum_zone_frames` consecutive
-frames. `OUTSIDE -> INSIDE` creates `IN`; `INSIDE -> OUTSIDE` creates `OUT`.
-Repeated observations in the stable zone do nothing, and returning to the origin
-cancels an incomplete transition. Track state expires after
-`stale_track_timeout` unseen frames.
+The first confirmed zone establishes the origin and never creates an event. It
+requires `minimum_origin_zone_frames` observations (falling back to the legacy
+`minimum_zone_frames`). A crossing is eligible only after a raw neutral-region
+sample. The destination must then remain confirmed for
+`minimum_destination_zone_frames`. `OUTSIDE -> neutral -> INSIDE` creates `IN`;
+`INSIDE -> neutral -> OUTSIDE` creates `OUT`.
+
+Emission latches the destination as the new stable side. A reverse event needs
+fresh stable-side dwell, departure, another neutral traversal, and opposite-side
+confirmation. Direct side flips never rebase a track. A cooldown is a secondary
+guard and can hold a fully confirmed reverse pending; it cannot replace the
+spatial transition. Short unseen gaps preserve pending state, while a gap beyond
+`maximum_transition_gap_frames` invalidates uncertain dwell and confirmation.
+Track memory expires after `stale_track_timeout` unseen frames.
+
+`zone_anchor` selects centre, bottom-centre, or top-centre. Optional normalized
+boundary hysteresis turns shallow zone-edge hits into an effective neutral
+classification for stability, but the counter separately retains the raw zone
+and never accepts a synthetic hysteresis sample as the required neutral
+traversal.
 
 These rules are independent of model, view, and diagnostic settings. TrackBus
 does not invent an event when a fragmented track lacks both sides of a complete
@@ -206,9 +227,11 @@ possible restart labels, and raw/fused frame totals.
 
 The summary distinguishes raw detections, fused detections, and tracked
 observations; records empty-frame counts, unique IDs, tracker updates, enabled
-views, fusion settings, duration, FPS, and existing doorway diagnostics; and
-retains the v0.1 `person_detections_total` field with its tracked-observation
-semantics.
+views, fusion settings, duration, FPS, selected anchor, hysteresis, stability
+settings, and suppression-reason observation counts; and retains the v0.1
+`person_detections_total` field with its tracked-observation semantics. Doorway
+occupancy/overlap diagnostics require a lane or crossing corridor. Unavailable
+metrics are `null` with a reason instead of an apparently successful zero.
 
 Large diagnostic CSVs are created only when
 `diagnostics.export_detection_csv: true`:
@@ -217,8 +240,9 @@ Large diagnostic CSVs are created only when
   and exclusion status;
 - fused detections include the selected box, confidence, contributing views, and
   JSON fusion metadata;
-- tracks include ID, box, confidence, anchor, zone, lane, counter state, and
-  contributing views.
+- tracks include ID, box, confidence, selected anchor, raw/effective/stable
+  zones, state, pending direction, dwell/confirmation progress, cooldown, gap,
+  suppression reasons, emitted event, lane, and contributing views.
 
 ## Privacy and system boundaries
 

@@ -5,7 +5,7 @@ model:
   confidence: 0.35
   imgsz: 640
   # FP16 is enabled only on a supported CUDA device; CPU safely disables it.
-  half: false
+  precision: fp32
 
 device: auto
 capacity: 40
@@ -15,6 +15,12 @@ logging_level: INFO
 tracking:
   tracker: configs/bytetrack_trackbus.yaml
   minimum_zone_frames: 3
+  minimum_origin_zone_frames: 3
+  minimum_destination_zone_frames: 3
+  maximum_transition_gap_frames: 15
+  event_cooldown_frames: 30
+  zone_anchor: bottom_center
+  zone_boundary_hysteresis: 0.0
   stale_track_timeout: 90
 
 # All camera-calibration coordinates are normalized against the source frame.
@@ -31,6 +37,8 @@ camera:
     left_lane: null
     center_lane: null
     right_lane: null
+  # Optional intended path used by doorway occupancy/overlap diagnostics.
+  crossing_corridor: null
   # Use only for known static structures, never passenger pathways.
   exclusion_polygons: []
   debug_calibration_overlay: false

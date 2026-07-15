@@ -83,6 +83,11 @@ class FrameCalibration:
             for lane, polygon in lane_configs.items()
             if polygon is not None
         }
+        self.crossing_corridor = (
+            _scale_polygon(config.crossing_corridor, frame_width, frame_height)
+            if config.crossing_corridor is not None
+            else None
+        )
         self.exclusions = tuple(
             _scale_polygon(polygon, frame_width, frame_height)
             for polygon in config.exclusion_polygons
@@ -95,14 +100,17 @@ class FrameCalibration:
 
     @property
     def doorway_enabled(self) -> bool:
-        return bool(self.lanes)
+        return bool(self.lanes) or self.crossing_corridor is not None
 
     @property
     def doorway_width(self) -> int:
-        if not self.lanes:
+        polygons = [*self.lanes.values()]
+        if self.crossing_corridor is not None:
+            polygons.append(self.crossing_corridor)
+        if not polygons:
             return self.frame_width
-        left = min(int(polygon[:, 0].min()) for polygon in self.lanes.values())
-        right = max(int(polygon[:, 0].max()) for polygon in self.lanes.values())
+        left = min(int(polygon[:, 0].min()) for polygon in polygons)
+        right = max(int(polygon[:, 0].max()) for polygon in polygons)
         return max(1, right - left + 1)
 
     def inference_frame(self, frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
@@ -129,6 +137,14 @@ class FrameCalibration:
         if not inside:
             return None
         return max(inside, key=lambda candidate: candidate[0])[1]
+
+    def corridor_contains(self, point: tuple[float, float]) -> bool:
+        """Return whether a selected source-coordinate point is in the corridor."""
+
+        return bool(
+            self.crossing_corridor is not None
+            and cv2.pointPolygonTest(self.crossing_corridor, point, False) >= 0
+        )
 
     def box_lanes(
         self, person: TrackedPerson, minimum_overlap: float
@@ -192,6 +208,16 @@ class FrameCalibration:
                         "Exclusion polygon "
                         f"{exclusion_index} overlaps {lane.value}; exclusions must "
                         "cover static structures only."
+                    )
+            if self.crossing_corridor is not None:
+                corridor_mask = _polygon_mask(
+                    self.crossing_corridor, self.frame_width, self.frame_height
+                )
+                if np.any((exclusion_mask != 0) & (corridor_mask != 0)):
+                    raise CalibrationError(
+                        "Exclusion polygon "
+                        f"{exclusion_index} overlaps the crossing corridor; "
+                        "exclusions must cover static structures only."
                     )
 
     def _clip_person(self, person: TrackedPerson) -> TrackedPerson:

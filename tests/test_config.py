@@ -37,6 +37,57 @@ def test_valid_configuration_loads(tmp_path: Path) -> None:
     assert config.model.confidence == 0.4
     assert config.model.imgsz == 512
     assert config.zones.outside[2] == (1.0, 0.4)
+    assert config.tracking.effective_minimum_origin_zone_frames == 2
+    assert config.tracking.effective_minimum_destination_zone_frames == 2
+    assert config.tracking.maximum_transition_gap_frames == 15
+    assert config.tracking.event_cooldown_frames == 30
+    assert config.tracking.zone_anchor == "bottom_center"
+    assert config.tracking.zone_boundary_hysteresis == 0.0
+
+
+def test_event_stability_configuration_loads(tmp_path: Path) -> None:
+    content = VALID_CONFIG.replace(
+        "  stale_track_timeout: 30",
+        """  minimum_origin_zone_frames: 4
+  minimum_destination_zone_frames: 5
+  maximum_transition_gap_frames: 12
+  event_cooldown_frames: 40
+  zone_anchor: top_center
+  zone_boundary_hysteresis: 0.015
+  stale_track_timeout: 30""",
+    )
+
+    config = load_config(write_config(tmp_path, content))
+
+    assert config.tracking.effective_minimum_origin_zone_frames == 4
+    assert config.tracking.effective_minimum_destination_zone_frames == 5
+    assert config.tracking.maximum_transition_gap_frames == 12
+    assert config.tracking.event_cooldown_frames == 40
+    assert config.tracking.zone_anchor == "top_center"
+    assert config.tracking.zone_boundary_hysteresis == 0.015
+
+
+@pytest.mark.parametrize(
+    ("setting", "message"),
+    [
+        ("minimum_origin_zone_frames: 0", "minimum_origin_zone_frames"),
+        ("minimum_destination_zone_frames: 0", "minimum_destination_zone_frames"),
+        ("maximum_transition_gap_frames: -1", "maximum_transition_gap_frames"),
+        ("event_cooldown_frames: -1", "event_cooldown_frames"),
+        ("zone_anchor: feet", "zone_anchor"),
+        ("zone_boundary_hysteresis: 0.11", "zone_boundary_hysteresis"),
+    ],
+)
+def test_invalid_event_stability_configuration_is_rejected(
+    tmp_path: Path, setting: str, message: str
+) -> None:
+    content = VALID_CONFIG.replace(
+        "  stale_track_timeout: 30",
+        f"  {setting}\n  stale_track_timeout: 30",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(tmp_path, content))
 
 
 @pytest.mark.parametrize(
