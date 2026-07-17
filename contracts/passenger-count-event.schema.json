@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trackbus.uz/contracts/passenger-count-event.schema.json",
+  "title": "TrackBus passenger count event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId", "observedAt", "busId", "routeId", "stopId",
+    "boardings", "alightings", "occupancy", "capacity", "source", "qualityScore"
+  ],
+  "properties": {
+    "eventId": { "type": "string", "minLength": 1 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "busId": { "type": "string", "minLength": 1 },
+    "routeId": { "type": "string", "minLength": 1 },
+    "stopId": { "type": "string", "minLength": 1 },
+    "boardings": { "type": "integer", "minimum": 0 },
+    "alightings": { "type": "integer", "minimum": 0 },
+    "occupancy": { "type": "integer", "minimum": 0 },
+    "capacity": { "type": "integer", "minimum": 1 },
+    "source": { "enum": ["apc-camera", "manual", "simulator"] },
+    "qualityScore": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}

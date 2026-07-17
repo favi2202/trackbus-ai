@@ -1,0 +1,28 @@
+[
+  {
+    "eventId": "evt-10041",
+    "observedAt": "2026-07-18T17:28:12+05:00",
+    "busId": "BUS-2204",
+    "routeId": "22",
+    "stopId": "CHORSU",
+    "boardings": 12,
+    "alightings": 3,
+    "occupancy": 66,
+    "capacity": 72,
+    "source": "apc-camera",
+    "qualityScore": 0.96
+  },
+  {
+    "eventId": "evt-10042",
+    "observedAt": "2026-07-18T17:29:50+05:00",
+    "busId": "BUS-2205",
+    "routeId": "22",
+    "stopId": "NAVOI",
+    "boardings": 8,
+    "alightings": 5,
+    "occupancy": 56,
+    "capacity": 72,
+    "source": "apc-camera",
+    "qualityScore": 0.94
+  }
+]
