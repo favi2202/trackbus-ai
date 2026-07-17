@@ -31,3 +31,6 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check src tests
       - run: pytest
+      - name: Validate sensor replay tool
+        working-directory: .
+        run: PYTHONPATH=tools python -m unittest discover -s tools/tests

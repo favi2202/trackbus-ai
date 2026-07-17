@@ -24,3 +24,14 @@ class PassengerCountEvent(BaseModel):
         return self
 
     model_config = {"populate_by_name": True}
+
+
+class ForecastRequest(BaseModel):
+    recent_occupancy: list[int] = Field(alias="recentOccupancy", min_length=1, max_length=288)
+    capacity: int = Field(gt=0)
+    hour: int = Field(ge=0, le=23)
+    day_type: Literal["weekday", "weekend"] = Field(default="weekday", alias="dayType")
+    weather: Literal["clear", "rain"] = "clear"
+    event_nearby: bool = Field(default=False, alias="eventNearby")
+
+    model_config = {"populate_by_name": True}

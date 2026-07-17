@@ -19,6 +19,8 @@ crowding information.
 - versioned JSON passenger-count contract;
 - web gateway endpoints under `/api/v1`;
 - independent Python analytics API with validation and forecast tests.
+- idempotent SQLite event storage with bus/route queries;
+- replayable sensor-event tooling and explainable quality checks.
 
 ## Repository map
 
@@ -32,6 +34,7 @@ docs/                      Architecture, roadmap, data and privacy decisions
 infra/                     Local service orchestration
 lib/                       Shared TypeScript domain logic
 services/analytics-api/    Production ingestion and forecasting boundary
+tools/                     Safe-by-default sensor replay utilities
 ```
 
 ## Run the showcase

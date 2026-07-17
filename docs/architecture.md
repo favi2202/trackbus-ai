@@ -22,6 +22,8 @@ flowchart LR
 - **Edge gateway:** attaches bus, route, stop, time and sensor-health metadata.
 - **Analytics API:** validates the versioned event contract and isolates vendor
   protocols from TrackBus storage and models.
+- **Pilot event store:** provides idempotent durable SQLite storage. The adapter
+  boundary permits a later PostgreSQL/Timescale replacement.
 - **Forecast service:** begins with a transparent baseline. Trained models are
   promoted only through measured evaluation and monitoring.
 - **Applications:** operator and passenger views receive occupancy bands and

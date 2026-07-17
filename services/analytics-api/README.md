@@ -15,3 +15,14 @@ uvicorn trackbus_analytics.main:app --reload
 
 The baseline model is deliberately transparent. A trained model should replace
 it only after offline evaluation demonstrates better error and calibration.
+
+Passenger-count events are stored idempotently in SQLite for the pilot. Set
+`TRACKBUS_DATABASE_PATH` to choose the database file. The storage adapter is
+isolated so a later PostgreSQL/Timescale implementation does not change sensor
+or application contracts.
+
+Useful URLs after startup:
+
+- `http://localhost:8000/docs` — interactive API documentation
+- `http://localhost:8000/health` — service health
+- `http://localhost:8000/v1/events/passenger-counts` — ingestion and queries

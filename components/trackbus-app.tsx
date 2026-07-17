@@ -167,6 +167,20 @@ export function TrackBusApp() {
   const [view, setView] = useState<View>("operations");
   const [live, setLive] = useState(false);
   const [tick, setTick] = useState(0);
+  const [apiStatus, setApiStatus] = useState<"checking" | "connected" | "offline">("checking");
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/v1/health", { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("health endpoint unavailable");
+        setApiStatus("connected");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setApiStatus("offline");
+      });
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     if (!live) return;
     const timer = window.setInterval(() => setTick((value) => value + 1), 1800);
@@ -176,7 +190,7 @@ export function TrackBusApp() {
   return (
     <main className="app-shell">
       <div className="showcase-ribbon"><strong>DEMO FOR SHOWCASING</strong><span>Synthetic Tashkent data · not connected to live government systems</span></div>
-      <header className="topbar"><button className="brand" onClick={() => setView("operations")}><span>TB</span><div><strong>TrackBus</strong><small>Transport intelligence</small></div></button><nav aria-label="Main navigation">{(Object.keys(viewLabels) as View[]).map((item) => <button key={item} className={view === item ? "active" : ""} onClick={() => setView(item)}>{viewLabels[item]}</button>)}</nav><div className="top-actions"><span className="updated"><i /> Updated 17:{32 + (tick % 9)}</span><button className={`live-button ${live ? "running" : ""}`} onClick={() => setLive(!live)}>{live ? "■ Pause demo" : "▶ Start live demo"}</button></div></header>
+      <header className="topbar"><button className="brand" onClick={() => setView("operations")}><span>TB</span><div><strong>TrackBus</strong><small>Transport intelligence</small></div></button><nav aria-label="Main navigation">{(Object.keys(viewLabels) as View[]).map((item) => <button key={item} className={view === item ? "active" : ""} onClick={() => setView(item)}>{viewLabels[item]}</button>)}</nav><div className="top-actions"><span className={`api-state ${apiStatus}`}><i /> {apiStatus === "connected" ? "API connected" : apiStatus === "offline" ? "API offline" : "Checking API"}</span><span className="updated"><i /> Updated 17:{32 + (tick % 9)}</span><button className={`live-button ${live ? "running" : ""}`} onClick={() => setLive(!live)}>{live ? "■ Pause demo" : "▶ Start live demo"}</button></div></header>
       <div className="mobile-tabs" aria-label="Mobile navigation">{(Object.keys(viewLabels) as View[]).map((item) => <button key={item} className={view === item ? "active" : ""} onClick={() => setView(item)}>{viewLabels[item]}</button>)}</div>
       <div className="page-frame">{view === "operations" && <OperationsView tick={tick} />}{view === "forecast" && <ForecastView />}{view === "pipeline" && <PipelineView />}{view === "passenger" && <PassengerView />}</div>
       <footer><span>TrackBus foundation · Pilot milestone 01</span><span>All dashboard values are synthetic showcase data</span></footer>

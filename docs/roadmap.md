@@ -12,7 +12,8 @@
 
 - obtain one approved bus/sensor data sample;
 - build the vendor adapter and replay harness;
-- add PostgreSQL/Timescale storage and data-quality monitoring;
+- use the implemented replay harness, idempotent pilot store and quality rules;
+- replace SQLite with PostgreSQL/Timescale when pilot volume requires it;
 - calibrate capacity and count corrections with field observations.
 
 ## Milestone 03 — network forecasting
