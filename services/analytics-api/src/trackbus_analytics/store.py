@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 
@@ -14,7 +15,7 @@ class InsertResult:
 
 
 class SQLiteEventStore:
-    """Small durable adapter for a pilot; replaceable behind the same service boundary."""
+    """Durable pilot event store with operational read models."""
 
     def __init__(self, path: str | Path = "data/trackbus.sqlite3") -> None:
         self.path = str(path)
@@ -76,16 +77,13 @@ class SQLiteEventStore:
                 """,
                 values,
             )
-        inserted = cursor.rowcount == 1
-        return InsertResult(accepted=True, duplicate=not inserted)
+        return InsertResult(accepted=True, duplicate=cursor.rowcount != 1)
 
     def latest_for_bus(self, bus_id: str) -> PassengerCountEvent | None:
         with self._lock:
             row = self._connection.execute(
-                """
-                SELECT * FROM passenger_count_events
-                WHERE bus_id = ? ORDER BY observed_at DESC LIMIT 1
-                """,
+                """SELECT * FROM passenger_count_events
+                WHERE bus_id = ? ORDER BY observed_at DESC LIMIT 1""",
                 (bus_id,),
             ).fetchone()
         return self._event_from_row(row) if row else None
@@ -109,34 +107,103 @@ class SQLiteEventStore:
         parameters.append(max(1, min(limit, 500)))
         with self._lock:
             rows = self._connection.execute(
-                f"""
-                SELECT * FROM passenger_count_events {where}
-                ORDER BY observed_at DESC LIMIT ?
-                """,  # noqa: S608 - the dynamic fragment contains only fixed clause names
+                f"""SELECT * FROM passenger_count_events {where}
+                ORDER BY observed_at DESC LIMIT ?""",  # noqa: S608
                 parameters,
             ).fetchall()
         return [self._dict_from_row(row) for row in rows]
 
+    def operational_summary(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after_minutes: int = 15,
+    ) -> dict[str, object]:
+        """Return an operator-safe health snapshot without exposing images or identities."""
+        reference = now or datetime.now(timezone.utc)
+        cutoff = reference - timedelta(minutes=max(1, min(stale_after_minutes, 1440)))
+        with self._lock:
+            totals = self._connection.execute(
+                """
+                SELECT COUNT(*) AS event_count,
+                    COUNT(DISTINCT bus_id) AS bus_count,
+                    COUNT(DISTINCT route_id) AS route_count,
+                    MAX(observed_at) AS latest_observed_at,
+                    SUM(CASE WHEN quality_issues != '[]' THEN 1 ELSE 0 END) AS flagged_count
+                FROM passenger_count_events
+                """
+            ).fetchone()
+            latest_buses = self._connection.execute(
+                """
+                SELECT bus_id, MAX(observed_at) AS latest_observed_at
+                FROM passenger_count_events GROUP BY bus_id
+                """
+            ).fetchall()
+
+        stale_buses = sum(
+            self._parse_observed(row["latest_observed_at"]) < cutoff for row in latest_buses
+        )
+        return {
+            "eventCount": totals["event_count"],
+            "busCount": totals["bus_count"],
+            "routeCount": totals["route_count"],
+            "flaggedEventCount": totals["flagged_count"] or 0,
+            "latestObservedAt": totals["latest_observed_at"],
+            "staleBusCount": stale_buses,
+            "staleAfterMinutes": max(1, min(stale_after_minutes, 1440)),
+            "status": "empty" if totals["event_count"] == 0 else (
+                "degraded" if stale_buses else "operational"
+            ),
+        }
+
+    def route_summaries(self) -> list[dict[str, object]]:
+        """Summarize the latest observation for every bus, grouped by route."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY bus_id ORDER BY observed_at DESC, inserted_at DESC
+                    ) AS position
+                    FROM passenger_count_events
+                )
+                SELECT route_id, COUNT(*) AS active_buses,
+                    ROUND(AVG(occupancy * 100.0 / capacity), 1) AS average_occupancy_percent,
+                    MAX(observed_at) AS latest_observed_at,
+                    SUM(CASE WHEN quality_issues != '[]' THEN 1 ELSE 0 END) AS flagged_buses
+                FROM ranked WHERE position = 1
+                GROUP BY route_id
+                ORDER BY average_occupancy_percent DESC, route_id ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "routeId": row["route_id"],
+                "activeBuses": row["active_buses"],
+                "averageOccupancyPercent": row["average_occupancy_percent"],
+                "latestObservedAt": row["latest_observed_at"],
+                "flaggedBuses": row["flagged_buses"] or 0,
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _parse_observed(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> PassengerCountEvent:
         return PassengerCountEvent(
-            eventId=row["event_id"],
-            observedAt=row["observed_at"],
-            busId=row["bus_id"],
-            routeId=row["route_id"],
-            stopId=row["stop_id"],
-            boardings=row["boardings"],
-            alightings=row["alightings"],
-            occupancy=row["occupancy"],
-            capacity=row["capacity"],
-            source=row["source"],
-            qualityScore=row["quality_score"],
+            eventId=row["event_id"], observedAt=row["observed_at"], busId=row["bus_id"],
+            routeId=row["route_id"], stopId=row["stop_id"], boardings=row["boardings"],
+            alightings=row["alightings"], occupancy=row["occupancy"], capacity=row["capacity"],
+            source=row["source"], qualityScore=row["quality_score"],
         )
 
     @classmethod
     def _dict_from_row(cls, row: sqlite3.Row) -> dict[str, object]:
-        event = cls._event_from_row(row)
-        payload = event.model_dump(by_alias=True, mode="json")
+        payload = cls._event_from_row(row).model_dump(by_alias=True, mode="json")
         payload["qualityIssues"] = json.loads(row["quality_issues"])
         payload["insertedAt"] = row["inserted_at"]
         return payload

@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="TrackBus Analytics API",
-    version="0.2.0",
+    version="0.3.0",
     description="Anonymous passenger-count ingestion and occupancy forecasting.",
     lifespan=lifespan,
 )
@@ -37,7 +37,7 @@ Store = Annotated[SQLiteEventStore, Depends(get_store)]
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "trackbus-analytics-api", "version": "0.2.0"}
+    return {"status": "ok", "service": "trackbus-analytics-api", "version": "0.3.0"}
 
 
 @app.post("/v1/events/passenger-counts", status_code=status.HTTP_202_ACCEPTED)
@@ -46,10 +46,8 @@ def accept_passenger_count(event: PassengerCountEvent, store: Store) -> dict[str
     issues = [asdict(issue) for issue in assess_event(event, previous)]
     result = store.append(event, issues)
     return {
-        "accepted": result.accepted,
-        "duplicate": result.duplicate,
-        "eventId": event.event_id,
-        "qualityIssues": issues,
+        "accepted": result.accepted, "duplicate": result.duplicate,
+        "eventId": event.event_id, "qualityIssues": issues,
     }
 
 
@@ -70,27 +68,33 @@ def current_bus_occupancy(bus_id: str, store: Store) -> dict[str, object]:
     if event is None:
         raise HTTPException(status_code=404, detail="No occupancy event found for this bus")
     return {
-        "busId": event.bus_id,
-        "routeId": event.route_id,
-        "observedAt": event.observed_at,
-        "occupancy": event.occupancy,
+        "busId": event.bus_id, "routeId": event.route_id,
+        "observedAt": event.observed_at, "occupancy": event.occupancy,
         "capacity": event.capacity,
         "occupancyPercent": round(event.occupancy / event.capacity * 100),
-        "source": event.source,
-        "qualityScore": event.quality_score,
+        "source": event.source, "qualityScore": event.quality_score,
     }
+
+
+@app.get("/v1/operations/summary")
+def operations_summary(
+    store: Store,
+    stale_after_minutes: Annotated[
+        int, Query(alias="staleAfterMinutes", ge=1, le=1440)
+    ] = 15,
+) -> dict[str, object]:
+    return store.operational_summary(stale_after_minutes=stale_after_minutes)
+
+
+@app.get("/v1/operations/routes")
+def operations_routes(store: Store) -> dict[str, object]:
+    routes = store.route_summaries()
+    return {"routes": routes, "count": len(routes)}
 
 
 @app.post("/v1/forecasts/occupancy")
 def occupancy_forecast(data: ForecastRequest) -> dict[str, int | float]:
-    result = forecast_occupancy(
-        ForecastInput(
-            recent_occupancy=data.recent_occupancy,
-            capacity=data.capacity,
-            hour=data.hour,
-            day_type=data.day_type,
-            weather=data.weather,
-            event_nearby=data.event_nearby,
-        )
-    )
-    return asdict(result)
+    return asdict(forecast_occupancy(ForecastInput(
+        recent_occupancy=data.recent_occupancy, capacity=data.capacity, hour=data.hour,
+        day_type=data.day_type, weather=data.weather, event_nearby=data.event_nearby,
+    )))
