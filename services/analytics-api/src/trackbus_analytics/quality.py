@@ -15,41 +15,55 @@ def assess_event(
     event: PassengerCountEvent,
     previous: PassengerCountEvent | None = None,
 ) -> tuple[QualityIssue, ...]:
-    """Return explainable data-quality findings without changing the source event."""
-    issues: list[QualityIssue] = []
+    """Return explainable findings without silently changing a source event."""
 
-    if event.quality_score < 0.75:
+    issues: list[QualityIssue] = []
+    if event.confidence < 0.75:
         issues.append(
             QualityIssue(
-                code="low_sensor_confidence",
+                code="low_source_confidence",
                 severity="warning",
-                message="Sensor quality score is below the pilot threshold of 0.75.",
+                message="Source confidence is below the pilot threshold of 0.75.",
             )
         )
-
+    issues.extend(
+        QualityIssue(
+            code=f"source_flag:{flag}",
+            severity="warning",
+            message=f"The source reported quality flag '{flag}'.",
+        )
+        for flag in event.quality_flags
+        if flag != "verified_empty_reset"
+    )
     if previous is None:
         return tuple(issues)
-
     if event.observed_at < previous.observed_at:
         issues.append(
             QualityIssue(
                 code="out_of_order_event",
                 severity="warning",
-                message="Observation time is earlier than the last accepted event for this bus.",
+                message="Observation time is earlier than the latest event for this bus.",
             )
         )
-
-    expected = previous.occupancy + event.boardings - event.alightings
-    if abs(expected - event.occupancy) > 3:
+    if event.alightings > previous.occupancy + event.boardings:
         issues.append(
             QualityIssue(
-                code="occupancy_delta_mismatch",
-                severity="warning",
-                message=(
-                    "Reported occupancy differs from the boarding/alighting balance "
-                    "by more than three passengers."
-                ),
+                code="impossible_negative_occupancy",
+                severity="error",
+                message="Alightings exceed passengers available before this event.",
             )
         )
-
+    if "verified_empty_reset" not in event.quality_flags:
+        expected = previous.occupancy + event.boardings - event.alightings
+        if abs(expected - event.occupancy) > 3:
+            issues.append(
+                QualityIssue(
+                    code="occupancy_delta_mismatch",
+                    severity="warning",
+                    message=(
+                        "Reported occupancy differs from the boarding/alighting balance "
+                        "by more than three passengers."
+                    ),
+                )
+            )
     return tuple(issues)

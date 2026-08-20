@@ -1,0 +1,94 @@
+# Coordinates are normalized: [0, 0] is the top-left and [1, 1] is the
+# bottom-right of any video resolution. Adjust these polygons for the camera.
+model:
+  path: yolo11n.pt
+  confidence: 0.35
+  imgsz: 640
+  precision: fp32
+
+device: auto
+capacity: 40
+initial_occupancy: 0
+logging_level: INFO
+
+tracking:
+  tracker: configs/bytetrack_trackbus.yaml
+  minimum_zone_frames: 3
+  minimum_origin_zone_frames: 3
+  minimum_destination_zone_frames: 3
+  maximum_transition_gap_frames: 15
+  event_cooldown_frames: 30
+  zone_anchor: bottom_center
+  zone_boundary_hysteresis: 0.0
+  stale_track_timeout: 90
+
+# All camera-calibration coordinates are normalized against the source frame.
+# This calibration is specific to data/input/test_video.mp4 and is not a
+# universal bus-camera preset. The v0.1 ROI experiment is intentionally removed.
+camera:
+  detection_roi: null
+  inference_views:
+    - name: full
+      bounds: [0.00, 0.00, 1.00, 1.00]
+      enabled: true
+    - name: left_doorway
+      bounds: [0.00, 0.15, 0.62, 1.00]
+      enabled: false
+    - name: right_doorway
+      bounds: [0.38, 0.15, 1.00, 1.00]
+      enabled: false
+
+  doorway_lanes:
+    anchor: center
+    left_lane:
+      - [0.08, 0.08]
+      - [0.40, 0.08]
+      - [0.40, 0.94]
+      - [0.08, 0.94]
+
+    center_lane:
+      - [0.32, 0.08]
+      - [0.68, 0.08]
+      - [0.68, 0.94]
+      - [0.32, 0.94]
+
+    right_lane:
+      - [0.60, 0.08]
+      - [0.92, 0.08]
+      - [0.92, 0.94]
+      - [0.60, 0.94]
+
+  exclusion_polygons: []
+  debug_calibration_overlay: true
+
+diagnostics:
+  export_detection_csv: false
+  debug_visualization: false
+  trajectory_length: 30
+
+detection_fusion:
+  method: nms
+  iou_threshold: 0.50
+  confidence_strategy: maximum
+  prefer_full_frame: false
+
+zones:
+  outside:
+    - [0.05, 0.05]
+    - [0.95, 0.05]
+    - [0.95, 0.40]
+    - [0.05, 0.40]
+  inside:
+    - [0.05, 0.60]
+    - [0.95, 0.60]
+    - [0.95, 0.95]
+    - [0.05, 0.95]
+
+outputs:
+  video: data/output/result.mp4
+  # Null paths are derived from the output video name.
+  events_csv: null
+  summary_json: null
+  raw_detections_csv: null
+  fused_detections_csv: null
+  tracks_csv: null

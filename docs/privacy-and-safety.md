@@ -1,11 +1,21 @@
 # Privacy and operational safety
 
-TrackBus should optimize transport capacity without identifying passengers.
+TrackBus optimizes transport capacity without identifying passengers.
 
-- Prefer on-device counting and transmit anonymous totals.
-- Separate raw camera access from analytics-system access.
-- Encrypt data in transit and at rest; rotate device credentials.
-- Apply short, approved retention to diagnostic video if it is required at all.
-- Record model version, inputs and reason for every dispatch recommendation.
-- Keep a trained operator responsible for operational changes.
-- Publish only occupancy bands to passengers, not precise individual tracking.
+- APC is the first-choice source when an approved counter already exists;
+  TrackBus Vision is optional.
+- Vision uses temporary process-local track IDs only. There is no face
+  recognition, biometric matching, cross-camera identity, or passenger profile.
+- Raw video remains on the edge by default. Approved validation footage requires
+  documented purpose, access, retention, and deletion.
+- The cloud contract contains counts, operational IDs, time, confidence, and
+  quality flags—not frames or identity.
+- Source data and API traffic require encryption, rotated device credentials,
+  least-privilege access, and audit logs before production.
+- Passengers receive occupancy bands and update confidence, not individual
+  movement histories.
+- Recommendations remain advisory and auditable. A trained operator approves
+  operational changes; TrackBus does not control safety-critical vehicle systems.
+
+Accuracy, ROI, and public-safety claims require representative pilot evidence.
+Synthetic showcase values never satisfy that gate.

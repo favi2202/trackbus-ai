@@ -5,10 +5,11 @@ import { occupancyLevel, occupancyPercent } from "@/lib/contracts";
 import { forecastOccupancy } from "@/lib/forecast";
 import { hourlyForecast, passengerEvents, route22Buses } from "@/lib/sample-data";
 
-type View = "command" | "forecast" | "passenger" | "system";
+type View = "command" | "pilot" | "forecast" | "passenger" | "system";
 
 const navigation: { id: View; label: string }[] = [
   { id: "command", label: "Command center" },
+  { id: "pilot", label: "Pilot proof" },
   { id: "forecast", label: "Forecast lab" },
   { id: "passenger", label: "Passenger app" },
   { id: "system", label: "How it works" },
@@ -146,6 +147,87 @@ function ForecastLab() {
   </section>;
 }
 
+type PilotSource = {
+  source: string;
+  status: string;
+  coverage?: string;
+  latest?: string;
+  eventCount?: number;
+  busCount?: number;
+  latestObservedAt?: string;
+};
+
+type PilotSnapshot = {
+  dataMode: "synthetic" | "fallback-synthetic" | "live";
+  summary: { eventCount: number; busCount: number; flaggedEventCount: number; staleBusCount: number };
+  sources: PilotSource[];
+  reconciliation: { routeId: string; sensorBoardings: number; paymentBoardings: number | null; boardingGap: number | null; status: string } | null;
+};
+
+const fallbackPilot: PilotSnapshot = {
+  dataMode: "synthetic",
+  summary: { eventCount: 1842, busCount: 5, flaggedEventCount: 23, staleBusCount: 1 },
+  sources: [
+    { source: "apc", status: "healthy", coverage: "3 buses", latest: "4 sec ago" },
+    { source: "vision", status: "pilot", coverage: "1 doorway", latest: "8 sec ago" },
+    { source: "payment", status: "healthy", coverage: "Route 22", latest: "1 min ago" },
+  ],
+  reconciliation: { routeId: "22", sensorBoardings: 1264, paymentBoardings: 1238, boardingGap: 26, status: "needs-review" },
+};
+
+function PilotProof() {
+  const [snapshot, setSnapshot] = useState<PilotSnapshot>(fallbackPilot);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/v1/operations/pilot", { signal: controller.signal })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error("pilot endpoint offline")))
+      .then((payload: PilotSnapshot) => setSnapshot(payload))
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setSnapshot(fallbackPilot);
+      });
+    return () => controller.abort();
+  }, []);
+
+  const mode = snapshot.dataMode === "live" ? "LIVE PILOT DATA" : snapshot.dataMode === "fallback-synthetic" ? "UPSTREAM OFFLINE · SYNTHETIC FALLBACK" : "SYNTHETIC PILOT MODEL";
+  const proofTargets = [
+    ["IN / OUT accuracy", "Measure on held-out door cycles", "Precision · recall · event F1"],
+    ["Live telemetry", "Prove source freshness and uptime", "No hidden camera-feed dependency"],
+    ["Occupancy history", "Reconstruct and reconcile every stop", "Manual resets remain auditable"],
+    ["Failure modes", "Report misses, duplicates, and drift", "Night and crowd categories required"],
+  ];
+  const stages = [
+    ["01", "Install", "One approved bus and doorway. Record hardware, source, and retention boundaries."],
+    ["02", "Collect + label", "Capture consented representative door cycles and label completed crossings."],
+    ["03", "Tune AI + API", "Calibrate zones, validate retries, and measure each operating category."],
+    ["04", "Pilot report", "Publish measured accuracy, uptime, failure modes, and per-bus cost."],
+  ];
+
+  return <section className="feature-view pilot-proof">
+    <header className="feature-hero pilot-hero"><div><span className="section-kicker">PILOT PROOF · 60 DAYS</span><h1>Prove the transport signal before promising scale.</h1><p>TrackBus turns existing APC, optional edge Vision, payment, manual, and import feeds into one auditable operating picture. The pilot must produce evidence—not invented accuracy or ROI.</p></div><span className={`synthetic-label ${snapshot.dataMode === "live" ? "live-data" : ""}`}>{mode}</span></header>
+
+    <div className="proof-targets">{proofTargets.map(([title, detail, metric]) => <article className="surface" key={title}><span>PROOF TARGET</span><h2>{title}</h2><p>{detail}</p><strong>{metric}</strong></article>)}</div>
+
+    <div className="pilot-grid">
+      <article className="surface source-health"><div className="surface-head"><div><span className="section-kicker">SOURCE HEALTH</span><h2>One contract, multiple approved inputs</h2></div><span className="model-chip">{snapshot.summary.eventCount.toLocaleString()} events</span></div>
+        <div className="source-list">{snapshot.sources.map(source => <div key={source.source}><span className={`source-dot ${source.status}`}/><strong>{source.source.toUpperCase()}</strong><em>{source.coverage ?? `${source.busCount ?? 0} buses`}</em><small>{source.latest ?? source.latestObservedAt ?? "No event"}</small><b>{source.status}</b></div>)}</div>
+        <div className="health-foot"><span>{snapshot.summary.flaggedEventCount} events need validation</span><span>{snapshot.summary.staleBusCount} stale source</span><span>Raw video stays local by default</span></div>
+      </article>
+
+      <aside className="surface reconcile-card"><span className="section-kicker">RECONCILIATION</span><h2>Route {snapshot.reconciliation?.routeId ?? "—"}</h2><div className="reconcile-values"><div><span>Sensor boardings</span><strong>{snapshot.reconciliation?.sensorBoardings ?? "—"}</strong></div><div><span>Payment taps</span><strong>{snapshot.reconciliation?.paymentBoardings ?? "—"}</strong></div><div className="gap"><span>Gap to investigate</span><strong>{snapshot.reconciliation?.boardingGap == null ? "—" : `${snapshot.reconciliation.boardingGap > 0 ? "+" : ""}${snapshot.reconciliation.boardingGap}`}</strong></div></div><p>Differences become review tasks; TrackBus does not silently force unlike sources to agree.</p><button className="approve-action"><span>Open validation queue</span><b>Operator review →</b></button></aside>
+    </div>
+
+    <div className="validation-grid">
+      <article className="surface"><span className="section-kicker">VALIDATION GAPS</span><h2>Evidence still required</h2><ul><li>Night and changing sunlight</li><li>Children, bags, and mobility aids</li><li>Simultaneous opposite crossings</li><li>Occlusion, vibration, and camera drift</li></ul></article>
+      <article className="surface why-trackbus"><span className="section-kicker">WHY TRACKBUS</span><h2>Operations above hardware</h2><p>Sensor vendors count. TrackBus normalizes, validates, reconstructs occupancy, forecasts overload, and gives operators an explainable action they can approve or reject.</p><strong>APC-first · Vision optional · vendor-neutral</strong></article>
+      <article className="surface privacy-boundary"><span className="section-kicker">EDGE PRIVACY</span><h2>Counts leave the bus—not identity.</h2><ul><li>Temporary video-local IDs only</li><li>No face recognition or biometric matching</li><li>Raw frames local unless evidence collection is approved</li><li>No safety-critical vehicle control</li></ul></article>
+    </div>
+
+    <section className="pilot-stages"><header><span className="section-kicker">PILOT SEQUENCE</span><h2>Install → evidence → measured decision</h2></header><div>{stages.map(([number, title, detail]) => <article key={number}><span>{number}</span><h3>{title}</h3><p>{detail}</p></article>)}</div></section>
+  </section>;
+}
+
 function PassengerApp() {
   return <section className="feature-view passenger-view"><header className="feature-hero"><div><span className="section-kicker">PUBLIC EXPERIENCE</span><h1>Turn operational intelligence into a calmer trip.</h1><p>Passengers see useful crowding estimates—not camera feeds, faces, or personal data.</p></div></header><div className="passenger-stage">
     <div className="phone"><div className="phone-top"><span>9:41</span><span>●●●</span></div><div className="app-brand"><div>TB</div><span><strong>TrackBus</strong><small>Tashkent</small></span><button>⌁</button></div><div className="app-search">⌕ <span>Where are you going?</span></div><div className="public-map"><div className="public-route-line"/><i className="public-stop s1"/><i className="public-stop s2"/><i className="public-stop s3"/><span className="public-bus b1">22</span><span className="public-bus b2">22</span><b>You are here</b></div><div className="nearby-title"><div><strong>Route 22</strong><small>Chorsu → Do&apos;stlik</small></div><span>See route</span></div><div className="arrival-card"><strong>2 min</strong><div><b>Bus 22-01</b><small>31 of 72 seats used</small></div><LoadBadge value={31}/></div><div className="arrival-card"><strong>7 min</strong><div><b>Bus 22-02</b><small>More space expected</small></div><LoadBadge value={27}/></div></div>
@@ -160,7 +242,7 @@ function SystemView() {
     { n: "03", icon: "▦", title: "Forecast", text: "Route history and live events predict pressure before capacity is reached.", meta: "86% confidence" },
     { n: "04", icon: "↗", title: "Coordinate", text: "Operators receive an auditable action; passengers receive a simpler choice.", meta: "Human approval" },
   ];
-  return <section className="feature-view"><header className="feature-hero"><div><span className="section-kicker">SYSTEM STORY</span><h1>Camera counts become transport decisions.</h1><p>The AI camera project continues in the background. TrackBus can start with any approved counter that sends the shared event format.</p></div><span className="synthetic-label">SYNTHETIC DEMONSTRATION</span></header><div className="system-flow">{stages.map((stage,index)=><article className="surface" key={stage.n}><span className="stage-number">{stage.n}</span><Icon>{stage.icon}</Icon><h2>{stage.title}</h2><p>{stage.text}</p><strong>{stage.meta}</strong>{index < stages.length-1 && <i>→</i>}</article>)}</div><div className="system-bottom"><article className="surface event-console"><div className="surface-head"><div><span className="section-kicker">LIVE CONTRACT</span><h2>Passenger-count events</h2></div><span className="live-chip"><i/>Streaming</span></div>{passengerEvents.map(event=><div className="console-row" key={event.eventId}><span>{event.observedAt.slice(11,19)}</span><strong>{event.busId}</strong><span>{event.stopId}</span><b>+{event.boardings} / −{event.alightings}</b><LoadBadge value={event.occupancy}/><em>{Math.round(event.qualityScore*100)}% quality</em></div>)}</article><aside className="surface privacy-card"><Icon>◇</Icon><h2>Built for public trust</h2><p>The operating contract contains counts, vehicle IDs, route IDs, timestamps, and sensor confidence.</p><ul><li>No passenger names</li><li>No public camera feeds</li><li>No facial recognition required</li><li>Every recommendation is reviewable</li></ul></aside></div></section>;
+  return <section className="feature-view"><header className="feature-hero"><div><span className="section-kicker">SYSTEM STORY</span><h1>Anonymous counts become transport decisions.</h1><p>TrackBus is APC-first and vendor-neutral. Optional edge Vision and every other approved source emit the same shared event format.</p></div><span className="synthetic-label">SYNTHETIC DEMONSTRATION</span></header><div className="system-flow">{stages.map((stage,index)=><article className="surface" key={stage.n}><span className="stage-number">{stage.n}</span><Icon>{stage.icon}</Icon><h2>{stage.title}</h2><p>{stage.text}</p><strong>{stage.meta}</strong>{index < stages.length-1 && <i>→</i>}</article>)}</div><div className="system-bottom"><article className="surface event-console"><div className="surface-head"><div><span className="section-kicker">CANONICAL CONTRACT</span><h2>Passenger-count events</h2></div><span className="live-chip"><i/>Synthetic replay</span></div>{passengerEvents.map(event=><div className="console-row" key={event.eventId}><span>{event.observedAt.slice(11,19)}</span><strong>{event.busId}</strong><span>{event.source}</span><b>+{event.boardings} / −{event.alightings}</b><LoadBadge value={event.occupancy}/><em>{Math.round(event.confidence*100)}% confidence</em></div>)}</article><aside className="surface privacy-card"><Icon>◇</Icon><h2>Built for public trust</h2><p>The operating contract contains anonymous counts, operational IDs, timestamps, confidence, and quality flags.</p><ul><li>No passenger names</li><li>Raw video stays at the edge by default</li><li>No facial recognition or persistent identity</li><li>Every recommendation is reviewable</li></ul></aside></div></section>;
 }
 
 export function TrackBusApp() {
@@ -205,7 +287,7 @@ export function TrackBusApp() {
     <header className="topbar"><button className="brand" onClick={() => setView("command")}><span>TB</span><div><strong>TrackBus</strong><small>Urban intelligence</small></div></button><nav>{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</nav><div className="header-status"><span className={`api-status ${api}`}><i/>{api === "connected" ? "SYSTEM ONLINE" : api === "offline" ? "OFFLINE" : "CONNECTING"}</span><div className="city-time"><strong>18:{47 + (tick % 10)}</strong><small>TASHKENT · FRI</small></div><button className={`demo-control ${live?"playing":""}`} onClick={startDemo}>{live ? "Ⅱ Pause scenario" : "▶ Run 60s scenario"}</button></div></header>
     <div className="mobile-nav">{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</div>
     {view === "command" && <StoryRail active={activeStory} onSelect={jumpStory}/>} 
-    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory}/>} {view === "forecast" && <ForecastLab/>} {view === "passenger" && <PassengerApp/>} {view === "system" && <SystemView/>}</div>
+    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory}/>} {view === "pilot" && <PilotProof/>} {view === "forecast" && <ForecastLab/>} {view === "passenger" && <PassengerApp/>} {view === "system" && <SystemView/>}</div>
     <footer><span>TrackBus · Tashkent transport intelligence</span><span>Pilot foundation · all values in this showcase are synthetic</span></footer>
   </main>;
 }

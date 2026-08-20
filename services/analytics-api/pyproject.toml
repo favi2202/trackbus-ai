@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trackbus-analytics-api"
-version = "0.3.0"
-description = "TrackBus passenger-count ingestion and forecasting service"
+version = "0.4.0"
+description = "Vendor-neutral TrackBus passenger-count and operations service"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -21,3 +21,4 @@ packages = ["src/trackbus_analytics"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = [".venv"]

@@ -13,11 +13,21 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TrackBus | Tashkent transport intelligence",
+  metadataBase: new URL("https://trackbus-showcase.favi-2202.chatgpt.site"),
+  title: "TrackBus Showcase | Transport intelligence",
   description:
-    "A working showcase of passenger counting, occupancy forecasting, and bus dispatch intelligence.",
-  other: {
-    "codex-preview": "development",
+    "Pilot-ready passenger counting, occupancy forecasting, and operator decision intelligence for Tashkent transport.",
+  openGraph: {
+    title: "TrackBus Showcase | Transport intelligence",
+    description: "Anonymous counts become auditable transport decisions.",
+    type: "website",
+    images: [{ url: "/og.png", width: 1672, height: 941, alt: "TrackBus transport intelligence showcase" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TrackBus Showcase | Transport intelligence",
+    description: "Anonymous counts become auditable transport decisions.",
+    images: ["/og.png"],
   },
   icons: {
     icon: "/favicon.svg",

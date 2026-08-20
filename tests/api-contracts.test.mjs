@@ -21,6 +21,7 @@ test("health endpoint identifies synthetic data mode", async () => {
   const body = await response.json();
   assert.equal(body.status, "ok");
   assert.equal(body.dataMode, "synthetic");
+  assert.equal(body.analyticsConfigured, false);
 });
 
 test("forecast endpoint returns a bounded baseline result", async () => {
@@ -50,4 +51,41 @@ test("passenger-count endpoint rejects an invalid contract", async () => {
   });
   assert.equal(response.status, 422);
   assert.equal((await response.json()).accepted, false);
+});
+
+test("gateway never pretends a valid event was persisted without analytics", async () => {
+  const response = await request("/api/v1/events/passenger-counts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      schemaVersion: "1.0",
+      eventId: "vision-test-1",
+      observedAt: "2026-08-20T10:00:00Z",
+      source: "vision",
+      busId: "BUS-1",
+      routeId: "22",
+      stopId: "STOP-1",
+      doorId: "DOOR-1",
+      boardings: 1,
+      alightings: 0,
+      occupancy: 1,
+      capacity: 72,
+      confidence: 0.93,
+      qualityFlags: [],
+    }),
+  });
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.accepted, false);
+  assert.equal(body.persisted, false);
+  assert.equal(body.retryable, true);
+});
+
+test("pilot proof endpoint labels fallback data as synthetic", async () => {
+  const response = await request("/api/v1/operations/pilot");
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.dataMode, "synthetic");
+  assert.ok(body.sources.length >= 3);
+  assert.equal(body.reconciliation.status, "needs-review");
 });

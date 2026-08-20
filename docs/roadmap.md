@@ -1,31 +1,35 @@
-# Foundation roadmap
+# Evidence-first roadmap
 
-## Milestone 01 — repository foundation (current)
+## Completed foundation
 
-- working operator, forecasting, pipeline and passenger showcase;
-- versioned passenger-count event contract;
-- ingestion and forecasting API boundaries;
-- transparent, testable baseline forecast;
-- synthetic Tashkent scenarios with clear labeling.
+- hosted synthetic operator and passenger showcase;
+- canonical event, durable ingestion, forecasting, and operations APIs;
+- v0.2.1 YOLO/ByteTrack separation, calibration, diagnostics, and evaluation;
+- conservative temporary-ID doorway events and offline delivery boundary;
+- Pilot Proof framing with source health, reconciliation, and privacy controls.
 
-## Milestone 02 — pilot integration
+## 60-day pilot
 
-- obtain one approved bus/sensor data sample;
-- build the vendor adapter and replay harness;
-- use the implemented replay harness, idempotent pilot store and quality rules;
-- replace SQLite with PostgreSQL/Timescale when pilot volume requires it;
-- calibrate capacity and count corrections with field observations.
+1. **Install and calibrate:** select one approved bus/door, document the source,
+   calibrate zones, and confirm privacy/retention controls.
+2. **Collect and label:** capture consented representative door cycles and label
+   completed IN/OUT event frames.
+3. **Tune AI and API:** measure by camera, lighting, crowding, occlusion, bags,
+   children, vibration, and simultaneous crossings; tune on calibration footage.
+4. **Pilot report:** publish measured precision, recall, event F1, count error,
+   timing error, failure modes, uptime, and per-bus cost. Do not invent accuracy
+   or ROI claims.
 
-## Milestone 03 — network forecasting
+## Network forecasting
 
-- train route/stop/time models on approved historical data;
-- evaluate MAE, overload recall and calibration against the baseline;
-- expose forecasts through a documented partner API;
-- add operator feedback and audit logs for recommendations.
+- replace SQLite only when measured volume requires it;
+- train route/stop/time models on approved history;
+- compare MAE, overload recall, and calibration against the transparent baseline;
+- add operator feedback and recommendation audit logs.
 
-## Milestone 04 — controlled rollout
+## Controlled rollout
 
 - deploy to a limited route group;
-- compare passenger wait time, overcrowding and vehicle utilization;
-- complete security, privacy and operational reviews;
-- expand only after measurable results.
+- compare wait time, crowding, and vehicle utilization;
+- complete security, privacy, and operational reviews;
+- expand only after the pilot meets documented acceptance criteria.

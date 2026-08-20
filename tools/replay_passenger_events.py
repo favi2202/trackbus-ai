@@ -23,7 +23,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument(
         "--send",
         action="store_true",
-        help="Actually send events. Without this flag the command only validates and prints.",
+        help=(
+            "Actually send events. Without this flag the command only validates "
+            "and prints."
+        ),
     )
     return parser.parse_args()
 
@@ -33,17 +36,20 @@ def load_events(path: str) -> list[dict[str, object]]:
     if not isinstance(payload, list):
         raise ValueError("input must be a JSON array")
     required = {
+        "schemaVersion",
         "eventId",
         "observedAt",
+        "source",
         "busId",
         "routeId",
         "stopId",
+        "doorId",
         "boardings",
         "alightings",
         "occupancy",
         "capacity",
-        "source",
-        "qualityScore",
+        "confidence",
+        "qualityFlags",
     }
     for index, event in enumerate(payload):
         if not isinstance(event, dict) or not required.issubset(event):
@@ -77,7 +83,9 @@ def main() -> int:
     mode = "SEND" if args.send else "DRY RUN"
     print(f"TrackBus replay · {mode} · {len(events)} events")
     for index, event in enumerate(events, start=1):
-        label = f"{event['eventId']} bus={event['busId']} occupancy={event['occupancy']}"
+        label = (
+            f"{event['eventId']} bus={event['busId']} occupancy={event['occupancy']}"
+        )
         if not args.send:
             print(f"[{index}/{len(events)}] valid {label}")
             continue

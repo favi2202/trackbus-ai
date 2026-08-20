@@ -9,9 +9,9 @@ export const route22Buses: BusSnapshot[] = [
 ];
 
 export const passengerEvents: PassengerCountEvent[] = [
-  { eventId: "evt-10041", observedAt: "2026-07-18T17:28:12+05:00", busId: "BUS-2204", routeId: "22", stopId: "CHORSU", boardings: 12, alightings: 3, occupancy: 66, capacity: 72, source: "apc-camera", qualityScore: 0.96 },
-  { eventId: "evt-10042", observedAt: "2026-07-18T17:29:50+05:00", busId: "BUS-2205", routeId: "22", stopId: "NAVOI", boardings: 8, alightings: 5, occupancy: 56, capacity: 72, source: "apc-camera", qualityScore: 0.94 },
-  { eventId: "evt-10043", observedAt: "2026-07-18T17:31:04+05:00", busId: "BUS-2202", routeId: "22", stopId: "OYBEK", boardings: 2, alightings: 9, occupancy: 27, capacity: 72, source: "apc-camera", qualityScore: 0.98 },
+  { schemaVersion: "1.0", eventId: "evt-10041", observedAt: "2026-07-18T17:28:12+05:00", source: "apc", busId: "BUS-2204", routeId: "22", stopId: "CHORSU", doorId: "DOOR-1", boardings: 12, alightings: 3, occupancy: 66, capacity: 72, confidence: 0.96, qualityFlags: [] },
+  { schemaVersion: "1.0", eventId: "evt-10042", observedAt: "2026-07-18T17:29:50+05:00", source: "vision", busId: "BUS-2205", routeId: "22", stopId: "NAVOI", doorId: "DOOR-1", boardings: 8, alightings: 5, occupancy: 56, capacity: 72, confidence: 0.94, qualityFlags: ["synthetic_demo"] },
+  { schemaVersion: "1.0", eventId: "evt-10043", observedAt: "2026-07-18T17:31:04+05:00", source: "apc", busId: "BUS-2202", routeId: "22", stopId: "OYBEK", doorId: "DOOR-2", boardings: 2, alightings: 9, occupancy: 27, capacity: 72, confidence: 0.98, qualityFlags: [] },
 ];
 
 export const networkRoutes = [

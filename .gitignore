@@ -1,6 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
+# JavaScript dependencies and build output
 /node_modules
 /.pnp
 .pnp.*
@@ -9,41 +7,50 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# testing
 /coverage
-
-# next.js
 /.next/
 /out/
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-next-env.d.ts
 /dist/
 /.wrangler/
 /.sites-runtime/
 /outputs/
 /work/
 
-# python
+# Local configuration and editor files
+.DS_Store
+*.pem
+.env*
+.vercel
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
+venv/
+env/
 .pytest_cache/
+.pytest_tmp*/
 .ruff_cache/
+.mypy_cache/
+cover/
+*.log
+
+# TrackBus model weights, queues, screenshots, and generated media
+*.pt
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/experiments/*
+!data/experiments/.gitkeep
+data/ground_truth/*
+!data/ground_truth/.gitkeep
+data/offline-queue/
+showcase-*.png
+showcase-events-*.csv

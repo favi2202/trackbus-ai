@@ -1,0 +1,111 @@
+# Bounded TrackBus v0.2.1 event-stability study for bus_door_02.mp4.
+# The live camera YAML remains the base; this matrix does not edit it.
+version: 1
+base_config: ../cameras/bus_door_02.yaml
+
+aggregate_ground_truth:
+  entered: 6
+  exited: 0
+
+evaluation:
+  tolerance_frames: 15
+
+views:
+  full:
+    bounds: [0.00, 0.00, 1.00, 1.00]
+
+runs:
+  - name: A_minimal_stability_reference
+    description: Closest v0.2.1 reference to legacy timing; neutral traversal remains mandatory.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker: &minimal_tracker
+      config: configs/bytetrack_trackbus.yaml
+      minimum_origin_zone_frames: 1
+      minimum_destination_zone_frames: 3
+      maximum_transition_gap_frames: 90
+      event_cooldown_frames: 0
+      zone_anchor: bottom_center
+      zone_boundary_hysteresis: 0.0
+    enabled_views: [full]
+
+  - name: B_stable_default
+    description: Safe default dwell, gap, cooldown, bottom anchor, and no geometric hysteresis.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker: &stable_tracker
+      <<: *minimal_tracker
+      minimum_origin_zone_frames: 3
+      maximum_transition_gap_frames: 15
+      event_cooldown_frames: 30
+    enabled_views: [full]
+
+  - name: C_longer_origin_dwell
+    description: Require five observed origin-zone frames before departure.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      minimum_origin_zone_frames: 5
+    enabled_views: [full]
+
+  - name: D_longer_destination_confirmation
+    description: Require five observed destination-zone frames before emission.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      minimum_destination_zone_frames: 5
+    enabled_views: [full]
+
+  - name: E_longer_cooldown
+    description: Retain the complete state machine and extend the secondary cooldown guard.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      event_cooldown_frames: 45
+    enabled_views: [full]
+
+  - name: F_boundary_hysteresis
+    description: Treat points within one percent of a zone boundary as transition observations.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      zone_boundary_hysteresis: 0.01
+    enabled_views: [full]
+
+  - name: G_center_anchor
+    description: Evaluate the box center while keeping stability defaults unchanged.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      zone_anchor: center
+    enabled_views: [full]
+
+  - name: H_top_center_anchor
+    description: Evaluate the box top-center while keeping stability defaults unchanged.
+    model: yolo11s.pt
+    confidence: 0.15
+    image_size: 960
+    precision: fp32
+    tracker:
+      <<: *stable_tracker
+      zone_anchor: top_center
+    enabled_views: [full]

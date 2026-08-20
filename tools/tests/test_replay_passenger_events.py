@@ -10,17 +10,20 @@ class ReplayInputTests(unittest.TestCase):
     def test_loads_valid_event_array(self) -> None:
         payload = [
             {
+                "schemaVersion": "1.0",
                 "eventId": "evt-1",
                 "observedAt": "2026-07-18T17:30:00+05:00",
+                "source": "import",
                 "busId": "BUS-2204",
                 "routeId": "22",
                 "stopId": "CHORSU",
+                "doorId": "DOOR-1",
                 "boardings": 1,
                 "alightings": 0,
                 "occupancy": 12,
                 "capacity": 72,
-                "source": "simulator",
-                "qualityScore": 0.95,
+                "confidence": 0.95,
+                "qualityFlags": [],
             }
         ]
         with tempfile.TemporaryDirectory() as directory:

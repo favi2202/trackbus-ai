@@ -1,44 +1,31 @@
-# TrackBus API
+# TrackBus Analytics API
 
-The Python analytics service exposes interactive OpenAPI documentation at
-`/docs` and its machine-readable schema at `/openapi.json`.
-
-## Endpoints
+The Python service exposes OpenAPI at `/docs` and `/openapi.json`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Deployment and container health |
-| `POST` | `/v1/events/passenger-counts` | Idempotently accept a sensor event |
+| `GET` | `/health` | Service/version health |
+| `POST` | `/v1/events/passenger-counts` | Validate and idempotently persist a canonical event |
 | `GET` | `/v1/events/passenger-counts` | Query recent events by bus or route |
-| `GET` | `/v1/buses/{busId}/occupancy` | Read the latest accepted occupancy |
-| `POST` | `/v1/forecasts/occupancy` | Run the transparent pilot baseline |
+| `GET` | `/v1/buses/{busId}/occupancy` | Latest reconstructed occupancy |
+| `POST` | `/v1/buses/{busId}/verified-empty` | Auditable operator reset ordered after device time |
+| `GET` | `/v1/operations/summary` | Pilot fleet/data status |
+| `GET` | `/v1/operations/source-health` | Freshness and findings by source family |
+| `GET` | `/v1/operations/reconciliation` | APC/Vision versus payment gaps |
+| `GET` | `/v1/operations/routes` | Latest route load summaries |
+| `POST` | `/v1/forecasts/occupancy` | Transparent bounded pilot forecast |
 
-## Idempotency
+`eventId` is the idempotency key. A retry returns `accepted: true`,
+`persisted: true`, and `duplicate: true` without adding a row. Accepted events
+retain both source `qualityFlags` and API `qualityIssues` for audit.
 
-`eventId` is the idempotency key. Replaying an already accepted event returns
-`accepted: true` and `duplicate: true` without creating another database row.
-This matters because buses can lose connectivity and retry buffered messages.
+The hosted web gateway validates the same contract. It forwards only when
+`TRACKBUS_ANALYTICS_API_URL` is configured; otherwise it returns a retryable
+`503` with `persisted: false`. It never presents a no-op as successful storage.
 
-## Quality findings
-
-Accepted responses can include `qualityIssues`. The first pilot checks:
-
-- low sensor confidence;
-- out-of-order timestamps;
-- occupancy that does not match the previous count plus boardings minus
-  alightings within a small tolerance.
-
-Findings remain visible for audit and calibration. The platform does not
-silently rewrite the original sensor value.
-
-## Example ingestion
-
-The sample file is an array, so use the provided replay tool:
+Use the safe dry-run replay before sending sample events:
 
 ```bash
 python tools/replay_passenger_events.py
 python tools/replay_passenger_events.py --send --target http://localhost:8000
 ```
-
-The first command is a dry run. Events are transmitted only when `--send` is
-explicitly provided.

@@ -1,20 +1,24 @@
-# Passenger-count data contract
+# Canonical passenger-count contract
 
-The canonical schema is `contracts/passenger-count-event.schema.json`.
+The authoritative JSON Schema is
+`contracts/passenger-count-event.schema.json`. Version `1.0` is the boundary
+between adapters, analytics, storage, and applications.
 
-Required fields identify the event, observation time, bus, route and stop;
-capture boardings, alightings, current occupancy and capacity; and include the
-source and a 0–1 quality score.
+| Field | Meaning |
+| --- | --- |
+| `eventId` | Globally unique idempotency key retained across retries |
+| `observedAt` | Timezone-aware source observation time |
+| `source` | `apc`, `vision`, `payment`, `manual`, or `import` |
+| `busId`, `routeId`, `stopId`, `doorId` | Operator-issued operational context |
+| `boardings`, `alightings` | Anonymous event deltas |
+| `occupancy`, `capacity` | Reconstructed onboard count and physical bound |
+| `confidence` | Source confidence from 0 to 1 |
+| `qualityFlags` | Explainable source-side limitations; never silently discarded |
 
-## Sensor adapter rule
+Vendor-specific names and protocols belong in adapters. Domain logic must never
+depend on a camera/APC vendor. `vision` uses temporary video-local track IDs, but
+those IDs are not included in the transport event and never become passenger
+identity.
 
-Magnetic North or another vehicle system may use different field names. A small
-adapter converts its payload to the canonical contract. The rest of TrackBus
-must never depend directly on one vendor's private protocol.
-
-## Data we do not require
-
-- passenger name or account;
-- face recognition or biometric identity;
-- raw cabin video in the analytics pipeline;
-- payment-card details.
+The contract does not require passenger names, faces, biometric templates,
+payment-card details, or raw cabin video.

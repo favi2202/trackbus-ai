@@ -1,17 +1,20 @@
 export type OccupancyLevel = "low" | "medium" | "high" | "critical";
 
 export type PassengerCountEvent = {
+  schemaVersion: "1.0";
   eventId: string;
   observedAt: string;
+  source: "apc" | "vision" | "payment" | "manual" | "import";
   busId: string;
   routeId: string;
   stopId: string;
+  doorId: string;
   boardings: number;
   alightings: number;
   occupancy: number;
   capacity: number;
-  source: "apc-camera" | "manual" | "simulator";
-  qualityScore: number;
+  confidence: number;
+  qualityFlags: string[];
 };
 
 export type BusSnapshot = {

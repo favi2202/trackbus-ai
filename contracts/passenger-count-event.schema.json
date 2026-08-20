@@ -1,24 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trackbus.uz/contracts/passenger-count-event.schema.json",
-  "title": "TrackBus passenger count event",
+  "title": "TrackBus canonical passenger count event",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "eventId", "observedAt", "busId", "routeId", "stopId",
-    "boardings", "alightings", "occupancy", "capacity", "source", "qualityScore"
+    "schemaVersion", "eventId", "observedAt", "source", "busId", "routeId",
+    "stopId", "doorId", "boardings", "alightings", "occupancy", "capacity",
+    "confidence", "qualityFlags"
   ],
   "properties": {
+    "schemaVersion": { "const": "1.0" },
     "eventId": { "type": "string", "minLength": 1 },
     "observedAt": { "type": "string", "format": "date-time" },
+    "source": { "enum": ["apc", "vision", "payment", "manual", "import"] },
     "busId": { "type": "string", "minLength": 1 },
     "routeId": { "type": "string", "minLength": 1 },
     "stopId": { "type": "string", "minLength": 1 },
+    "doorId": { "type": "string", "minLength": 1 },
     "boardings": { "type": "integer", "minimum": 0 },
     "alightings": { "type": "integer", "minimum": 0 },
     "occupancy": { "type": "integer", "minimum": 0 },
     "capacity": { "type": "integer", "minimum": 1 },
-    "source": { "enum": ["apc-camera", "manual", "simulator"] },
-    "qualityScore": { "type": "number", "minimum": 0, "maximum": 1 }
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "qualityFlags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
   }
 }
