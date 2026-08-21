@@ -12,7 +12,7 @@ async function renderedHome() {
   );
 }
 
-test("renders finished TrackBus metadata and Live Pilot navigation", async () => {
+test("renders finished TrackBus metadata and trilingual navigation", async () => {
   const response = await renderedHome();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -21,5 +21,9 @@ test("renders finished TrackBus metadata and Live Pilot navigation", async () =>
   assert.match(html, /property="og:image" content="https:\/\/trackbus-showcase\.favi\.workers\.dev\/og\.png"/i);
   assert.match(html, /rel="(?:shortcut )?icon" href="https:\/\/trackbus-showcase\.favi\.workers\.dev\/favicon\.svg"/i);
   assert.match(html, />Live pilot</i);
+  assert.match(html, /aria-label="Language"/i);
+  assert.match(html, />EN(?:<!-- -->)? · (?:<!-- -->)?English</i);
+  assert.match(html, />UZ(?:<!-- -->)? · (?:<!-- -->)?O‘zbekcha</i);
+  assert.match(html, />RU(?:<!-- -->)? · (?:<!-- -->)?Русский</i);
   assert.doesNotMatch(html, /codex-preview/i);
 });
