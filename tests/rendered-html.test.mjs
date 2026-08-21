@@ -21,9 +21,11 @@ test("renders finished TrackBus metadata and trilingual navigation", async () =>
   assert.match(html, /property="og:image" content="https:\/\/trackbus-showcase\.favi\.workers\.dev\/og\.png"/i);
   assert.match(html, /rel="(?:shortcut )?icon" href="https:\/\/trackbus-showcase\.favi\.workers\.dev\/favicon\.svg"/i);
   assert.match(html, />Live pilot</i);
-  assert.match(html, /aria-label="Language"/i);
-  assert.match(html, />EN(?:<!-- -->)? · (?:<!-- -->)?English</i);
-  assert.match(html, />UZ(?:<!-- -->)? · (?:<!-- -->)?O‘zbekcha</i);
-  assert.match(html, />RU(?:<!-- -->)? · (?:<!-- -->)?Русский</i);
+  assert.match(html, /role="group" aria-label="Language"/i);
+  assert.match(html, /title="English"[^>]*>EN</i);
+  assert.match(html, /title="O‘zbekcha"[^>]*>UZ</i);
+  assert.match(html, /title="Русский"[^>]*>RU</i);
+  assert.match(html, /aria-label="Primary navigation"/i);
+  assert.doesNotMatch(html, />18:47</i);
   assert.doesNotMatch(html, /codex-preview/i);
 });
