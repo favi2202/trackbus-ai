@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "trackbus-showcase",
   "main": "dist/server/index.js",
-  "compatibility_date": "2026-08-21",
+  "compatibility_date": "2026-05-22",
   "assets": {
     "directory": "dist/client",
     "binding": "ASSETS"
