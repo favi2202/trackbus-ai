@@ -6,15 +6,16 @@ separate demo while the `workers.dev` deployment is used for camera ingestion.
 
 ## First deployment
 
-Run these commands from the repository root:
+Run these commands from the repository root. PowerShell does not require Git
+Bash; the build and artifact checks run through Node.js on every platform:
 
 ```powershell
-npx wrangler login
-npm run cloudflare:types
-npm run cloudflare:dry-run
-npm run cloudflare:deploy
-npm run cloudflare:migrate
-npx wrangler secret put TRACKBUS_INGEST_KEY
+npx.cmd wrangler login
+npm.cmd run cloudflare:types
+npm.cmd run cloudflare:dry-run
+npm.cmd run cloudflare:deploy
+npm.cmd run cloudflare:migrate
+npx.cmd wrangler secret put TRACKBUS_INGEST_KEY
 ```
 
 Wrangler prints the public `https://trackbus-showcase.<account>.workers.dev`
