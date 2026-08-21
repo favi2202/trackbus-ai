@@ -19,9 +19,18 @@ The Python service exposes OpenAPI at `/docs` and `/openapi.json`.
 `persisted: true`, and `duplicate: true` without adding a row. Accepted events
 retain both source `qualityFlags` and API `qualityIssues` for audit.
 
-The hosted web gateway validates the same contract. It forwards only when
-`TRACKBUS_ANALYTICS_API_URL` is configured; otherwise it returns a retryable
-`503` with `persisted: false`. It never presents a no-op as successful storage.
+The hosted web gateway exposes the matching path under `/api`:
+
+| Method | Hosted path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/events/passenger-counts` | Authenticate and idempotently store a camera event in D1 |
+| `GET` | `/api/v1/events/passenger-counts?limit=50` | Return recent stored JSON for the site and direct inspection |
+| `GET` | `/api/v1/operations/pilot` | Return current buses, source health, reconciliation, and recent events |
+
+POST requests require `Authorization: Bearer <TRACKBUS_INGEST_KEY>`. The edge
+client reads the matching value from `TRACKBUS_API_KEY`. GET is intentionally
+read-only and public because the payload contains anonymous counts and
+operational IDs—not frames, faces, or persistent passenger identities.
 
 Use the safe dry-run replay before sending sample events:
 

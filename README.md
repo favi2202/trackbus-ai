@@ -5,14 +5,15 @@ normalizes anonymous passenger-count events from approved APC sensors, optional
 TrackBus Vision cameras, payments, manual corrections, and imports into current
 occupancy, demand forecasts, and auditable operator recommendations.
 
-> The hosted dashboard is a **synthetic showcase**, not a production accuracy
-> claim. Vision uses temporary anonymous track IDs, performs no facial
-> recognition, and keeps raw video on the edge by default.
+> The dashboard's Live pilot tab shows stored camera events. Forecast and
+> dispatch scenarios remain clearly labeled synthetic demonstrations, not
+> production accuracy claims. Vision uses temporary anonymous track IDs,
+> performs no facial recognition, and keeps raw video on the edge by default.
 
 ## What works now
 
-- Pilot Proof operator dashboard with source health, reconciliation, validation
-  gaps, privacy boundaries, and the 60-day pilot sequence;
+- Live Pilot operator dashboard with D1-backed source health, current bus
+  occupancy, recent JSON events, reconciliation, and two-second refresh;
 - vendor-neutral passenger-count contract and durable idempotent analytics API;
 - real Ultralytics YOLO + ByteTrack Vision pipeline and v0.2.1 calibration,
   diagnostics, and evaluation tools;
@@ -42,9 +43,15 @@ npm ci
 npm run dev
 ```
 
-The dashboard labels all built-in values as synthetic. Its web gateway validates
-events and forwards them only when `TRACKBUS_ANALYTICS_API_URL` is configured;
-it never claims persistence while the analytics service is unavailable.
+The hosted gateway validates authenticated camera events and stores them
+idempotently in Cloudflare D1. View the newest stored records directly at:
+
+```text
+https://trackbus-showcase.favi-2202.chatgpt.site/api/v1/events/passenger-counts?limit=50
+```
+
+The Live pilot tab polls the same source every two seconds. Forecast, dispatch,
+and passenger-app scenarios remain labeled synthetic.
 
 ## Real Vision showcase
 
@@ -65,9 +72,20 @@ python showcase.py --demo
 python showcase.py --calibrate --camera 0
 ```
 
+Send confirmed crossings to the hosted showcase (PowerShell):
+
+```powershell
+$env:TRACKBUS_API_KEY="<camera ingestion key>"
+python showcase.py --camera 0 --api-url https://trackbus-showcase.favi-2202.chatgpt.site/api
+```
+
+On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
+
 Useful overrides include `--model`, `--confidence`, `--imgsz`, `--device`,
-`--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--bus-id`, `--route-id`,
-`--stop-id`, and `--door-id`. The default zones are a safe presentation
+`--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`, `--bus-id`,
+`--route-id`, `--stop-id`, and `--door-id`. Prefer the
+`TRACKBUS_API_KEY` environment variable over `--api-key` so the key does not
+appear in shell history. The default zones are a safe presentation
 starting point; a real camera must be calibrated for its doorway geometry.
 
 Keyboard controls:

@@ -1,10 +1,12 @@
+import { env } from "cloudflare:workers";
+
 export async function GET() {
-  const analyticsConfigured = Boolean(process.env.TRACKBUS_ANALYTICS_API_URL);
+  const storageConfigured = Boolean((env as unknown as { DB?: D1Database }).DB);
   return Response.json({
     service: "trackbus-showcase-gateway",
     status: "ok",
-    version: "0.4.0",
-    dataMode: analyticsConfigured ? "connected" : "synthetic",
-    analyticsConfigured,
+    version: "0.5.0",
+    dataMode: storageConfigured ? "connected" : "unavailable",
+    storageConfigured,
   });
 }

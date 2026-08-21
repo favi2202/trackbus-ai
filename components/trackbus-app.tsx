@@ -9,7 +9,7 @@ type View = "command" | "pilot" | "forecast" | "passenger" | "system";
 
 const navigation: { id: View; label: string }[] = [
   { id: "command", label: "Command center" },
-  { id: "pilot", label: "Pilot proof" },
+  { id: "pilot", label: "Live pilot" },
   { id: "forecast", label: "Forecast lab" },
   { id: "passenger", label: "Passenger app" },
   { id: "system", label: "How it works" },
@@ -158,39 +158,48 @@ type PilotSource = {
 };
 
 type PilotSnapshot = {
-  dataMode: "synthetic" | "fallback-synthetic" | "live";
-  summary: { eventCount: number; busCount: number; flaggedEventCount: number; staleBusCount: number };
+  dataMode: "live-empty" | "unavailable" | "live";
+  summary: { status: string; eventCount: number; busCount: number; routeCount: number; flaggedEventCount: number; staleBusCount: number };
   sources: PilotSource[];
   reconciliation: { routeId: string; sensorBoardings: number; paymentBoardings: number | null; boardingGap: number | null; status: string } | null;
+  buses: { busId: string; routeId: string; occupancy: number; capacity: number; source: string; observedAt: string }[];
+  recentEvents: { eventId: string; observedAt: string; receivedAt: string; source: string; busId: string; routeId: string; stopId: string; doorId: string; boardings: number; alightings: number; occupancy: number; capacity: number; confidence: number; qualityFlags: string[] }[];
+  refreshedAt: string;
 };
 
-const fallbackPilot: PilotSnapshot = {
-  dataMode: "synthetic",
-  summary: { eventCount: 1842, busCount: 5, flaggedEventCount: 23, staleBusCount: 1 },
-  sources: [
-    { source: "apc", status: "healthy", coverage: "3 buses", latest: "4 sec ago" },
-    { source: "vision", status: "pilot", coverage: "1 doorway", latest: "8 sec ago" },
-    { source: "payment", status: "healthy", coverage: "Route 22", latest: "1 min ago" },
-  ],
-  reconciliation: { routeId: "22", sensorBoardings: 1264, paymentBoardings: 1238, boardingGap: 26, status: "needs-review" },
+const emptyPilot: PilotSnapshot = {
+  dataMode: "live-empty",
+  summary: { status: "waiting-for-camera", eventCount: 0, busCount: 0, routeCount: 0, flaggedEventCount: 0, staleBusCount: 0 },
+  sources: [],
+  reconciliation: null,
+  buses: [],
+  recentEvents: [],
+  refreshedAt: new Date(0).toISOString(),
 };
 
 function PilotProof() {
-  const [snapshot, setSnapshot] = useState<PilotSnapshot>(fallbackPilot);
+  const [snapshot, setSnapshot] = useState<PilotSnapshot>(emptyPilot);
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/v1/operations/pilot", { signal: controller.signal })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error("pilot endpoint offline")))
-      .then((payload: PilotSnapshot) => setSnapshot(payload))
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setSnapshot(fallbackPilot);
-      });
-    return () => controller.abort();
+    const refresh = () => {
+      fetch("/api/v1/operations/pilot", { signal: controller.signal, cache: "no-store" })
+        .then(async response => response.ok ? await response.json() as PilotSnapshot : Promise.reject(new Error("pilot endpoint offline")))
+        .then(payload => setSnapshot(payload))
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setSnapshot(current => ({ ...current, dataMode: "unavailable" }));
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2000);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
   }, []);
 
-  const mode = snapshot.dataMode === "live" ? "LIVE PILOT DATA" : snapshot.dataMode === "fallback-synthetic" ? "UPSTREAM OFFLINE · SYNTHETIC FALLBACK" : "SYNTHETIC PILOT MODEL";
+  const mode = snapshot.dataMode === "live" ? "LIVE CAMERA DATA" : snapshot.dataMode === "live-empty" ? "WAITING FOR CAMERA" : "LIVE STORAGE UNAVAILABLE";
   const proofTargets = [
     ["IN / OUT accuracy", "Measure on held-out door cycles", "Precision · recall · event F1"],
     ["Live telemetry", "Prove source freshness and uptime", "No hidden camera-feed dependency"],
@@ -216,6 +225,15 @@ function PilotProof() {
       </article>
 
       <aside className="surface reconcile-card"><span className="section-kicker">RECONCILIATION</span><h2>Route {snapshot.reconciliation?.routeId ?? "—"}</h2><div className="reconcile-values"><div><span>Sensor boardings</span><strong>{snapshot.reconciliation?.sensorBoardings ?? "—"}</strong></div><div><span>Payment taps</span><strong>{snapshot.reconciliation?.paymentBoardings ?? "—"}</strong></div><div className="gap"><span>Gap to investigate</span><strong>{snapshot.reconciliation?.boardingGap == null ? "—" : `${snapshot.reconciliation.boardingGap > 0 ? "+" : ""}${snapshot.reconciliation.boardingGap}`}</strong></div></div><p>Differences become review tasks; TrackBus does not silently force unlike sources to agree.</p><button className="approve-action"><span>Open validation queue</span><b>Operator review →</b></button></aside>
+    </div>
+
+    <div className="live-data-grid">
+      <article className="surface live-fleet"><div className="surface-head"><div><span className="section-kicker">CURRENT BUSES</span><h2>Latest camera occupancy</h2></div><span className="live-chip"><i/>{snapshot.summary.busCount} connected</span></div>
+        {snapshot.buses.length ? <div className="live-bus-list">{snapshot.buses.map(bus => <div key={bus.busId}><strong>{bus.busId}</strong><span>Route {bus.routeId}</span><b>{bus.occupancy} / {bus.capacity}</b><em>{Math.round((bus.occupancy / Math.max(1, bus.capacity)) * 100)}% full</em><small>{new Date(bus.observedAt).toLocaleTimeString()}</small></div>)}</div> : <p className="empty-live">Start the Vision showcase to populate real bus occupancy.</p>}
+      </article>
+      <article className="surface live-events"><div className="surface-head"><div><span className="section-kicker">LIVE JSON LOG</span><h2>Latest passenger events</h2></div><a href="/api/v1/events/passenger-counts?limit=50" target="_blank" rel="noreferrer">Open raw JSON ↗</a></div>
+        {snapshot.recentEvents.length ? <div className="live-event-list">{snapshot.recentEvents.map(event => <div key={event.eventId}><time>{new Date(event.observedAt).toLocaleTimeString()}</time><strong>{event.busId}</strong><span>{event.stopId}</span><b>+{event.boardings} / −{event.alightings}</b><em>ONBOARD {event.occupancy}</em><small>{Math.round(event.confidence * 100)}% · {event.qualityFlags.length ? event.qualityFlags.join(", ") : "OK"}</small></div>)}</div> : <p className="empty-live">No events yet. This log updates every 2 seconds after the camera confirms a crossing.</p>}
+      </article>
     </div>
 
     <div className="validation-grid">
@@ -288,6 +306,6 @@ export function TrackBusApp() {
     <div className="mobile-nav">{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</div>
     {view === "command" && <StoryRail active={activeStory} onSelect={jumpStory}/>} 
     <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory}/>} {view === "pilot" && <PilotProof/>} {view === "forecast" && <ForecastLab/>} {view === "passenger" && <PassengerApp/>} {view === "system" && <SystemView/>}</div>
-    <footer><span>TrackBus · Tashkent transport intelligence</span><span>Pilot foundation · all values in this showcase are synthetic</span></footer>
+    <footer><span>TrackBus · Tashkent transport intelligence</span><span>Live pilot reads stored camera events · other showcase scenarios are synthetic</span></footer>
   </main>;
 }

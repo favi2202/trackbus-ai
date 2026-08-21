@@ -23,6 +23,18 @@ python showcase.py --calibrate --camera 0 --save-zones configs/showcase_zones.ya
 python showcase.py --video door.mp4 --zones configs/showcase_zones.yaml --api-url http://localhost:8000
 ```
 
+To connect a Windows camera directly to the hosted Live pilot dashboard:
+
+```powershell
+$env:TRACKBUS_API_KEY="<camera ingestion key>"
+python showcase.py --camera 0 --api-url https://trackbus-showcase.favi-2202.chatgpt.site/api
+```
+
+Each confirmed crossing is POSTed as canonical JSON, stored under its `eventId`,
+and appears in the dashboard within about two seconds. Inspect the raw records at
+`/api/v1/events/passenger-counts?limit=50`. The API key is a bearer credential;
+keep it out of source files and prefer the environment variable to `--api-key`.
+
 Use `--model`, `--imgsz`, `--confidence`, `--device`, `--frame-skip`, and
 `--tracker` to match the edge hardware. CUDA requires a CUDA-enabled PyTorch
 install; use `--device cpu` when it is unavailable. Ultralytics `8.4.95` and

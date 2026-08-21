@@ -12,13 +12,13 @@ async function renderedHome() {
   );
 }
 
-test("renders finished TrackBus metadata and Pilot Proof navigation", async () => {
+test("renders finished TrackBus metadata and Live Pilot navigation", async () => {
   const response = await renderedHome();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>TrackBus Showcase \| Transport intelligence<\/title>/i);
   assert.match(html, /property="og:image" content="https:\/\/trackbus-showcase\.favi-2202\.chatgpt\.site\/og\.png"/i);
-  assert.match(html, />Pilot proof</i);
+  assert.match(html, />Live pilot</i);
   assert.doesNotMatch(html, /codex-preview/i);
 });

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 import sys
 import time
 from collections import deque
@@ -104,7 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--api-url",
         default=None,
-        help="Analytics API base URL; omitted means disk queue only",
+        help="TrackBus API base URL; hosted showcase uses https://trackbus-showcase.favi-2202.chatgpt.site/api",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Ingestion key; prefer the TRACKBUS_API_KEY environment variable",
     )
     parser.add_argument("--queue-dir", type=Path, default=Path("data/offline-queue"))
     parser.add_argument("--bus-id", default="BUS-DEMO-01")
@@ -611,7 +617,11 @@ def run(args: argparse.Namespace) -> int:
         minimum_zone_frames=args.minimum_zone_frames,
         maximum_gap_frames=args.maximum_transition_gap,
     )
-    api = TrackBusApiClient(args.api_url, args.queue_dir)
+    api = TrackBusApiClient(
+        args.api_url,
+        args.queue_dir,
+        api_key=args.api_key or os.environ.get("TRACKBUS_API_KEY"),
+    )
     capture = _capture(source)
     state = RuntimeState(occupancy=args.initial_occupancy, fullscreen=args.fullscreen)
     events: deque[PassengerCountEvent] = deque(maxlen=250)

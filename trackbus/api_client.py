@@ -24,10 +24,16 @@ class DeliveryResult:
 
 class TrackBusApiClient:
     def __init__(
-        self, base_url: str | None, queue_directory: str | Path, *, timeout: float = 3.0
+        self,
+        base_url: str | None,
+        queue_directory: str | Path,
+        *,
+        api_key: str | None = None,
+        timeout: float = 3.0,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
         self.queue_directory = Path(queue_directory)
+        self.api_key = api_key
         self.timeout = timeout
 
     @property
@@ -71,13 +77,16 @@ class TrackBusApiClient:
         return delivered, self.queued_count
 
     def _post(self, payload: dict[str, object]) -> int:
+        headers = {
+            "content-type": "application/json",
+            "user-agent": "TrackBus-Vision/1.0",
+        }
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
             f"{self.base_url}/v1/events/passenger-counts",
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "user-agent": "TrackBus-Vision/1.0",
-            },
+            headers=headers,
             method="POST",
         )
         try:
