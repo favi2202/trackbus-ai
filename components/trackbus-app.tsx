@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { occupancyLevel, occupancyPercent } from "@/lib/contracts";
 import { forecastOccupancy } from "@/lib/forecast";
+import { PassengerBeta } from "@/components/passenger-beta";
 import {
   languageLocales,
   languageOptions,
@@ -253,13 +254,6 @@ function PilotProof({ t, language }: { t: Translator; language: Language }) {
   </section>;
 }
 
-function PassengerApp({ t }: { t: Translator }) {
-  return <section className="feature-view passenger-view"><header className="feature-hero"><div><span className="section-kicker">{t("publicExperience")}</span><h1>{t("passengerHero")}</h1><p>{t("passengerHeroDetail")}</p></div></header><div className="passenger-stage">
-    <div className="phone"><div className="phone-top"><span>9:41</span><span>●●●</span></div><div className="app-brand"><div>TB</div><span><strong>TrackBus</strong><small>{t("cityTashkent")}</small></span><button aria-label={t("seeRoute")}>⌁</button></div><div className="app-search">⌕ <span>{t("whereGoing")}</span></div><div className="public-map"><div className="public-route-line"/><i className="public-stop s1"/><i className="public-stop s2"/><i className="public-stop s3"/><span className="public-bus b1">22</span><span className="public-bus b2">22</span><b>{t("youAreHere")}</b></div><div className="nearby-title"><div><strong>{t("route22")}</strong><small>Chorsu → Do&apos;stlik</small></div><span>{t("seeRoute")}</span></div><div className="arrival-card"><strong>{t("minutesShort", { minutes: 2 })}</strong><div><b>{t("busName", { bus: "22-01" })}</b><small>{t("seatsUsed", { count: 31 })}</small></div><LoadBadge value={31} t={t}/></div><div className="arrival-card"><strong>{t("minutesShort", { minutes: 7 })}</strong><div><b>{t("busName", { bus: "22-02" })}</b><small>{t("moreSpace")}</small></div><LoadBadge value={27} t={t}/></div></div>
-    <aside className="passenger-copy"><span className="section-kicker">{t("oneDataset")}</span><h2>{t("operatorsAct")}<br/>{t("passengersPlan")}</h2><p>{t("dispatchUpdates")}</p><div className="benefit-list"><div><Icon>✓</Icon><span><strong>{t("simpleChoices")}</strong><small>{t("simpleChoicesDetail")}</small></span></div><div><Icon>◎</Icon><span><strong>{t("privacyDesign")}</strong><small>{t("privacyDesignDetail")}</small></span></div><div><Icon>↗</Icon><span><strong>{t("moreTrust")}</strong><small>{t("moreTrustDetail")}</small></span></div></div><div className="public-result"><span>{t("afterDispatch")}</span><strong>91% → 68%</strong><small>{t("nextDeparture")}</small></div></aside>
-  </div></section>;
-}
-
 function SystemView({ t }: { t: Translator }) {
   const stages = [
     { n: "01", icon: "◉", title: t("count"), text: t("countDetail"), meta: t("noFaceStorage") },
@@ -375,7 +369,7 @@ export function TrackBusApp() {
       <nav className="primary-nav" aria-label={t("primaryNavigation")}>{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</nav>
     </div>
     {view === "command" && <StoryRail active={activeStory} onSelect={jumpStory} t={t}/>}
-    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory} t={t} displayTime={tashkentTime}/>} {view === "pilot" && <PilotProof t={t} language={language}/>} {view === "forecast" && <ForecastLab t={t}/>} {view === "passenger" && <PassengerApp t={t}/>} {view === "system" && <SystemView t={t}/>}</div>
+    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory} t={t} displayTime={tashkentTime}/>} {view === "pilot" && <PilotProof t={t} language={language}/>} {view === "forecast" && <ForecastLab t={t}/>} {view === "passenger" && <PassengerBeta t={t}/>} {view === "system" && <SystemView t={t}/>}</div>
     <footer><span>{t("footerBrand")}</span><span>{t("footerData")}</span></footer>
   </main>;
 }
