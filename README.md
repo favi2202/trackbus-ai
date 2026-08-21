@@ -108,6 +108,29 @@ If the API is offline, canonical events are retained under
 `data/offline-queue/` and retried without changing their event IDs. A missing
 demo video exits with discovery instructions instead of opening an empty window.
 
+## Measure Vision recognition
+
+Separate YOLO detection quality from ByteTrack and IN/OUT logic before tuning:
+
+```powershell
+python -m trackbus.benchmark_detection `
+  --video test_video.mp4 `
+  --model yolo11s.pt `
+  --imgsz 960 `
+  --conf 0.20
+
+python -m trackbus.sweep_detection `
+  --video test_video.mp4 `
+  --matrix configs/detection_sweep.yaml `
+  --output-dir data/experiments/detection-sweep
+```
+
+Without box-level person annotations these commands report detection coverage,
+confidence, zero-detection gaps, edge clipping, stability proxies, FPS, and
+latency—but deliberately do not claim precision, recall, F1, or a best accuracy
+configuration. See the [detector benchmark guide](docs/detection-benchmark.md)
+and [failure audit](docs/vision-failure-audit.md).
+
 ## Verification
 
 ```bash
