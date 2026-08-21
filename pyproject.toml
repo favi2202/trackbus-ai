@@ -26,6 +26,10 @@ dev = [
 
 [project.scripts]
 trackbus = "trackbus.main:main"
+trackbus-showcase = "showcase:main"
+
+[tool.setuptools]
+py-modules = ["showcase"]
 
 [tool.setuptools.packages.find]
 include = ["trackbus*"]
