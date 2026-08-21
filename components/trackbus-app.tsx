@@ -88,7 +88,7 @@ function FleetMap({ values, selected, onSelect, live, t }: { values: number[]; s
   </div>;
 }
 
-function CommandCenter({ tick, live, applied, setApplied, jump, t }: { tick: number; live: boolean; applied: boolean; setApplied: (value: boolean) => void; jump: (step: number) => void; t: Translator }) {
+function CommandCenter({ tick, live, applied, setApplied, jump, t, displayTime }: { tick: number; live: boolean; applied: boolean; setApplied: (value: boolean) => void; jump: (step: number) => void; t: Translator; displayTime: string }) {
   const [selected, setSelected] = useState(3);
   const occupancies = route22Buses.map((bus, index) => {
     const pulse = live ? ((tick + index * 2) % 5) - 2 : 0;
@@ -117,7 +117,7 @@ function CommandCenter({ tick, live, applied, setApplied, jump, t }: { tick: num
 
       <aside className="decision-stack">
         <article className={`surface incident-card ${applied ? "success" : ""}`}>
-          <div className="incident-top"><span className="incident-code">{applied ? t("actionConfirmed") : t("priority")}</span><span className="incident-time">18:47</span></div>
+          <div className="incident-top"><span className="incident-code">{applied ? t("actionConfirmed") : t("priority")}</span><span className="incident-time">{displayTime}</span></div>
           <div className="incident-visual"><div className="capacity-ring" style={{ "--load": `${applied ? 68 : 91}%` } as React.CSSProperties}><strong>{applied ? 68 : 91}%</strong><span>{t("full")}</span></div><div><small>{t("bus", { bus: "22-04" })}</small><h2>{applied ? t("crowdingFalling") : t("capacityRisk")}</h2><p>{applied ? t("crowdingFallingDetail") : t("capacityRiskDetail")}</p></div></div>
           <div className="prediction"><span>{t("twelveMinutes")}</span><div><strong>{applied ? t("estimatedStabilization") : t("untilFullCapacity")}</strong><small>{t("forecastConfidence")}</small></div></div>
           {!applied ? <button className="approve-action" onClick={() => { setApplied(true); jump(3); }}><span>{t("dispatchReserve")}</span><b>{t("approve")}</b></button> : <button className="approve-action applied" onClick={() => setApplied(false)}><span>{t("reserveDispatched")}</span><b>{t("undoDemo")}</b></button>}
@@ -278,6 +278,7 @@ export function TrackBusApp() {
   const [api, setApi] = useState<"checking" | "connected" | "offline">("checking");
   const [language, setLanguage] = useState<Language>("en");
   const [languageLoaded, setLanguageLoaded] = useState(false);
+  const [now, setNow] = useState<Date | null>(null);
   const t = useMemo<Translator>(() => (key, values) => translate(language, key, values), [language]);
   const navigation: { id: View; label: string }[] = [
     { id: "command", label: t("commandCenter") },
@@ -287,6 +288,22 @@ export function TrackBusApp() {
     { id: "system", label: t("howItWorks") },
   ];
   const activeStory = applied ? 3 : Math.min(2, Math.floor((tick % 12) / 4));
+  const tashkentTime = now
+    ? new Intl.DateTimeFormat(languageLocales[language], {
+      timeZone: "Asia/Tashkent",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(now)
+    : "--:--";
+  const tashkentDate = now
+    ? new Intl.DateTimeFormat(languageLocales[language], {
+      timeZone: "Asia/Tashkent",
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+    }).format(now)
+    : t("tashkent");
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -321,6 +338,15 @@ export function TrackBusApp() {
     return () => window.clearInterval(timer);
   }, [live]);
 
+  useEffect(() => {
+    const firstUpdate = window.setTimeout(() => setNow(new Date()), 0);
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => {
+      window.clearTimeout(firstUpdate);
+      window.clearInterval(timer);
+    };
+  }, []);
+
   function startDemo() {
     if (!live) { setTick(0); setApplied(false); setView("command"); }
     setLive(value => !value);
@@ -334,10 +360,22 @@ export function TrackBusApp() {
 
   return <main className="app-shell">
     <div className="demo-disclaimer"><span>{t("showcaseMode")}</span><p>{t("showcaseDisclaimer")}</p><button onClick={() => setView("system")}>{t("realVsSimulated")}</button></div>
-    <header className="topbar"><button className="brand" onClick={() => setView("command")}><span>TB</span><div><strong>TrackBus</strong><small>{t("urbanIntelligence")}</small></div></button><nav>{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</nav><div className="header-status"><label className="language-switcher"><span className="sr-only">{t("language")}</span><select aria-label={t("language")} value={language} onChange={event => setLanguage(event.target.value as Language)}>{languageOptions.map(option => <option key={option.code} value={option.code}>{option.short} · {option.label}</option>)}</select></label><span className={`api-status ${api}`}><i/>{api === "connected" ? t("systemOnline") : api === "offline" ? t("offline") : t("connecting")}</span><div className="city-time"><strong>18:{47 + (tick % 10)}</strong><small>{t("tashkentFriday")}</small></div><button className={`demo-control ${live?"playing":""}`} onClick={startDemo}>{live ? `Ⅱ ${t("pauseScenario")}` : `▶ ${t("runScenario")}`}</button></div></header>
-    <div className="mobile-nav">{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</div>
-    {view === "command" && <StoryRail active={activeStory} onSelect={jumpStory} t={t}/>} 
-    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory} t={t}/>} {view === "pilot" && <PilotProof t={t} language={language}/>} {view === "forecast" && <ForecastLab t={t}/>} {view === "passenger" && <PassengerApp t={t}/>} {view === "system" && <SystemView t={t}/>}</div>
+    <div className="site-header">
+      <header className="topbar">
+        <button className="brand" onClick={() => setView("command")}><span>TB</span><div><strong>TrackBus</strong><small>{t("urbanIntelligence")}</small></div></button>
+        <div className="header-status">
+          <div className="language-switcher" role="group" aria-label={t("language")}>
+            {languageOptions.map(option => <button key={option.code} type="button" className={language === option.code ? "active" : ""} aria-pressed={language === option.code} title={option.label} onClick={() => setLanguage(option.code)}>{option.short}</button>)}
+          </div>
+          <span className={`api-status ${api}`}><i/>{api === "connected" ? t("systemOnline") : api === "offline" ? t("offline") : t("connecting")}</span>
+          <div className="city-time" aria-label={`${t("tashkent")} ${tashkentTime}`}><strong>{tashkentTime}</strong><small>{tashkentDate}</small></div>
+          <button className={`demo-control ${live?"playing":""}`} onClick={startDemo}>{live ? `Ⅱ ${t("pauseScenario")}` : `▶ ${t("runScenario")}`}</button>
+        </div>
+      </header>
+      <nav className="primary-nav" aria-label={t("primaryNavigation")}>{navigation.map(item=><button key={item.id} className={view===item.id?"active":""} onClick={()=>setView(item.id)}>{item.label}</button>)}</nav>
+    </div>
+    {view === "command" && <StoryRail active={activeStory} onSelect={jumpStory} t={t}/>}
+    <div className="content-frame">{view === "command" && <CommandCenter tick={tick} live={live} applied={applied} setApplied={setApplied} jump={jumpStory} t={t} displayTime={tashkentTime}/>} {view === "pilot" && <PilotProof t={t} language={language}/>} {view === "forecast" && <ForecastLab t={t}/>} {view === "passenger" && <PassengerApp t={t}/>} {view === "system" && <SystemView t={t}/>}</div>
     <footer><span>{t("footerBrand")}</span><span>{t("footerData")}</span></footer>
   </main>;
 }
