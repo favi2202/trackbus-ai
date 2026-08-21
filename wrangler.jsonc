@@ -11,7 +11,8 @@
     {
       "binding": "DB",
       "database_name": "trackbus-showcase-db",
-      "migrations_dir": "drizzle"
+      "migrations_dir": "drizzle",
+      "database_id": "66a29f3f-3ce6-4449-a232-9f4f29022e79"
     }
   ],
   "secrets": {
