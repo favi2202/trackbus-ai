@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://trackbus-showcase.favi-2202.chatgpt.site"),
+  metadataBase: new URL("https://trackbus-showcase.favi.workers.dev"),
   title: "TrackBus Showcase | Transport intelligence",
   description:
     "Pilot-ready passenger counting, occupancy forecasting, and operator decision intelligence for Tashkent transport.",
@@ -32,6 +32,7 @@ export const metadata: Metadata = {
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
   },
 };
 

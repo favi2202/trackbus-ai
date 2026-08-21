@@ -18,7 +18,8 @@ test("renders finished TrackBus metadata and Live Pilot navigation", async () =>
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>TrackBus Showcase \| Transport intelligence<\/title>/i);
-  assert.match(html, /property="og:image" content="https:\/\/trackbus-showcase\.favi-2202\.chatgpt\.site\/og\.png"/i);
+  assert.match(html, /property="og:image" content="https:\/\/trackbus-showcase\.favi\.workers\.dev\/og\.png"/i);
+  assert.match(html, /rel="(?:shortcut )?icon" href="https:\/\/trackbus-showcase\.favi\.workers\.dev\/favicon\.svg"/i);
   assert.match(html, />Live pilot</i);
   assert.doesNotMatch(html, /codex-preview/i);
 });
