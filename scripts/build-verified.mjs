@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -87,7 +87,13 @@ function run(command, args, timeoutMs) {
   });
 }
 
-const vinext = path.join(projectRoot, "node_modules", "vinext", "dist", "cli.js");
+const vinext = path.join(
+  projectRoot,
+  "node_modules",
+  "vinext",
+  "dist",
+  "cli.js",
+);
 if (!existsSync(vinext)) {
   throw new Error("vinext is unavailable. Run npm ci and wait for it to finish before building.");
 }
@@ -99,7 +105,7 @@ await run(
   process.execPath,
   [
     "--experimental-loader",
-    path.join(projectRoot, "scripts", "cloudflare-workers-loader.mjs"),
+    pathToFileURL(path.join(projectRoot, "scripts", "cloudflare-workers-loader.mjs")).href,
     path.join(projectRoot, "scripts", "validate-artifact.mjs"),
   ],
   duration(process.env.SITES_VALIDATE_TIMEOUT, 30_000),
