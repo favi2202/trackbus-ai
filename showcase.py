@@ -32,6 +32,7 @@ from trackbus.tracker import ByteTrackAdapter, TrackerAdapterError
 
 LOGGER = logging.getLogger("trackbus.showcase")
 WINDOW = "TrackBus Vision / Edge AI - Live"
+MINIMUM_DISPLAY_WIDTH = 960
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 ZONE_COLORS = {
     Zone.OUTSIDE: (231, 166, 64),
@@ -294,8 +295,15 @@ def _draw_track(
     track: TrackedDetection,
     zone: Zone,
     trail: deque[tuple[int, int]],
+    scale: tuple[float, float] = (1.0, 1.0),
 ) -> None:
-    left, top, right, bottom = (round(value) for value in track.bounding_box)
+    scale_x, scale_y = scale
+    left, top, right, bottom = (
+        round(track.bounding_box[0] * scale_x),
+        round(track.bounding_box[1] * scale_y),
+        round(track.bounding_box[2] * scale_x),
+        round(track.bounding_box[3] * scale_y),
+    )
     color = ZONE_COLORS.get(zone, (170, 180, 190))
     cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
     cv2.putText(
@@ -308,9 +316,114 @@ def _draw_track(
         2,
     )
     trail.append((round(track.anchor[0]), round(track.anchor[1])))
+    display_trail = np.asarray(
+        [
+            (round(x * scale_x), round(y * scale_y))
+            for x, y in trail
+        ],
+        dtype=np.int32,
+    )
     if len(trail) > 1:
-        cv2.polylines(frame, [np.asarray(trail, dtype=np.int32)], False, color, 2)
-    cv2.circle(frame, trail[-1], 4, color, -1)
+        cv2.polylines(frame, [display_trail], False, color, 2)
+    cv2.circle(frame, tuple(display_trail[-1]), 4, color, -1)
+
+
+def _prepare_display_frame(
+    frame: np.ndarray, *, expand: bool
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Upscale small sources before UI drawing instead of enlarging drawn text."""
+
+    height, width = frame.shape[:2]
+    if not expand or width >= MINIMUM_DISPLAY_WIDTH:
+        return frame, (1.0, 1.0)
+    target_width = MINIMUM_DISPLAY_WIDTH
+    target_height = max(1, round(height * target_width / width))
+    display = cv2.resize(
+        frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR
+    )
+    return display, (target_width / width, target_height / height)
+
+
+def _text_width(text: str, scale: float, thickness: int = 1) -> int:
+    return cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness
+    )[0][0]
+
+
+def _fitted_scale(
+    text: str,
+    *,
+    max_width: int,
+    preferred: float,
+    thickness: int = 1,
+    minimum: float = 0.2,
+) -> float:
+    """Return a Hershey-font scale that keeps one line inside max_width."""
+
+    if max_width <= 0:
+        return minimum
+    width = _text_width(text, preferred, thickness)
+    if width <= max_width:
+        return preferred
+    scale = preferred * max_width / max(1, width)
+    return max(minimum, min(preferred, scale))
+
+
+def _put_fitted_text(
+    frame: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    *,
+    max_width: int,
+    preferred_scale: float,
+    color: tuple[int, int, int],
+    thickness: int = 1,
+) -> float:
+    scale = _fitted_scale(
+        text,
+        max_width=max_width,
+        preferred=preferred_scale,
+        thickness=thickness,
+    )
+    cv2.putText(
+        frame,
+        text,
+        origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
+    return scale
+
+
+def _event_quality_label(event: PassengerCountEvent, *, compact: bool) -> str:
+    if not event.quality_flags:
+        return "OK"
+    labels = {
+        "low_detection_confidence": "LOW" if compact else "LOW CONF",
+        "occupancy_boundary_clamped": "LIMIT" if compact else "OCC LIMIT",
+    }
+    rendered = [
+        labels.get(flag, flag.replace("_", " ").upper())
+        for flag in event.quality_flags
+    ]
+    return "+".join(rendered)
+
+
+def _event_row(event: PassengerCountEvent, *, compact: bool) -> str:
+    if compact:
+        direction = "IN" if event.boardings else "OUT"
+        return (
+            f"{direction} | OCC {event.occupancy} | {event.confidence:.0%} | "
+            f"{_event_quality_label(event, compact=True)}"
+        )
+    direction = "BOARDING" if event.boardings else "ALIGHTING"
+    return (
+        f"{direction} | OCC {event.occupancy} | {event.confidence:.0%} | "
+        f"{_event_quality_label(event, compact=False)}"
+    )
 
 
 def _draw_panel(
@@ -324,96 +437,110 @@ def _draw_panel(
     frame_number: int,
 ) -> None:
     height, width = frame.shape[:2]
-    cv2.rectangle(frame, (0, 0), (width, 76), (5, 15, 23), -1)
-    cv2.putText(
-        frame,
-        "TRACKBUS VISION",
-        (18, 29),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.76,
-        (90, 225, 190),
-        2,
-    )
-    cv2.putText(
-        frame,
-        "EDGE AI · LIVE · ANONYMOUS TEMPORARY IDS",
-        (18, 54),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
-        (165, 185, 195),
-        1,
-    )
+    padding = 18
+    title = "TRACKBUS VISION"
+    subtitle = "EDGE AI | LIVE | ANONYMOUS TEMPORARY IDS"
     summary = (
         f"IN {state.boardings}   OUT {state.alightings}   "
         f"ONBOARD {state.occupancy}   TRACKS {active_tracks}   FPS {fps:.1f}"
     )
-    cv2.putText(
-        frame,
-        summary,
-        (max(18, width - 570), 31),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.53,
-        (235, 241, 243),
-        2,
-    )
+    api_text = f"{state.api_status} | QUEUED {queue_count}"
+    left_width = max(_text_width(title, 0.76, 2), _text_width(subtitle, 0.42))
+    right_width = max(_text_width(summary, 0.53, 2), _text_width(api_text, 0.4))
+    wide_header = padding * 2 + left_width + 30 + right_width <= width
+    header_height = 76 if wide_header else 104
+    cv2.rectangle(frame, (0, 0), (width, header_height), (5, 15, 23), -1)
+
+    if wide_header:
+        right_x = width - padding - right_width
+        placements = (
+            (title, (padding, 29), left_width, 0.76, (90, 225, 190), 2),
+            (subtitle, (padding, 54), left_width, 0.42, (165, 185, 195), 1),
+            (summary, (right_x, 31), right_width, 0.53, (235, 241, 243), 2),
+        )
+        api_origin = (right_x, 55)
+        api_max_width = right_width
+    else:
+        available = max(1, width - padding * 2)
+        placements = (
+            (title, (padding, 25), available, 0.68, (90, 225, 190), 2),
+            (subtitle, (padding, 47), available, 0.4, (165, 185, 195), 1),
+            (summary, (padding, 72), available, 0.48, (235, 241, 243), 2),
+        )
+        api_origin = (padding, 94)
+        api_max_width = available
+
+    for text, origin, max_width, scale, color, thickness in placements:
+        _put_fitted_text(
+            frame,
+            text,
+            origin,
+            max_width=max_width,
+            preferred_scale=scale,
+            color=color,
+            thickness=thickness,
+        )
+
     api_color = (90, 225, 190) if state.api_status == "API ONLINE" else (82, 211, 255)
-    cv2.putText(
+    _put_fitted_text(
         frame,
-        f"{state.api_status} · QUEUED {queue_count}",
-        (max(18, width - 570), 55),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.4,
-        api_color,
-        1,
+        api_text,
+        api_origin,
+        max_width=api_max_width,
+        preferred_scale=0.4,
+        color=api_color,
+        thickness=1,
     )
 
     panel_width = min(360, max(250, width // 3))
+    panel_top = header_height + 6
+    panel_bottom = min(height - 8, panel_top + 163)
+    if panel_bottom <= panel_top + 30:
+        return
     cv2.rectangle(
         frame,
-        (width - panel_width, 82),
-        (width - 8, min(height - 8, 245)),
+        (width - panel_width, panel_top),
+        (width - 8, panel_bottom),
         (7, 22, 32),
         -1,
     )
-    cv2.putText(
+    _put_fitted_text(
         frame,
         "CONFIRMED EVENTS",
-        (width - panel_width + 13, 106),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
-        (90, 225, 190),
-        1,
+        (width - panel_width + 13, panel_top + 24),
+        max_width=panel_width - 34,
+        preferred_scale=0.42,
+        color=(90, 225, 190),
     )
-    for index, event in enumerate(list(events)[-5:][::-1]):
-        direction = "BOARDING" if event.boardings else "ALIGHTING"
-        flags = ",".join(event.quality_flags) or "quality ok"
-        text = (
-            f"{direction:<9} occ {event.occupancy:>2} · "
-            f"{event.confidence:.0%} · {flags}"
-        )
-        cv2.putText(
+    first_event_baseline = panel_top + 50
+    row_height = 23
+    max_rows = max(0, (panel_bottom - first_event_baseline) // row_height + 1)
+    compact_events = panel_width < 320
+    visible_events = list(events)[-max_rows:] if max_rows else []
+    for index, event in enumerate(visible_events[::-1]):
+        text = _event_row(event, compact=compact_events)
+        _put_fitted_text(
             frame,
             text,
-            (width - panel_width + 13, 132 + index * 23),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.35,
-            (205, 218, 224),
-            1,
+            (width - panel_width + 13, first_event_baseline + index * row_height),
+            max_width=panel_width - 34,
+            preferred_scale=0.35,
+            color=(205, 218, 224),
         )
     if frame_number <= state.flash_until:
         box_width = min(560, width - 40)
         x1 = (width - box_width) // 2
-        y1 = max(90, height - 110)
+        y1 = max(header_height + 14, height - 110)
         cv2.rectangle(frame, (x1, y1), (x1 + box_width, y1 + 62), (12, 60, 55), -1)
         cv2.rectangle(frame, (x1, y1), (x1 + box_width, y1 + 62), (90, 225, 190), 2)
-        cv2.putText(
+        _put_fitted_text(
             frame,
             state.flash_text,
             (x1 + 18, y1 + 39),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
-            (110, 240, 205),
-            2,
+            max_width=box_width - 36,
+            preferred_scale=0.72,
+            color=(110, 240, 205),
+            thickness=2,
         )
 
 
@@ -525,17 +652,17 @@ def run(args: argparse.Namespace) -> int:
                 detections = detector.detect(frame, source_view="full")
                 tracks = tracker.update(detections, frame)
                 counter.expire(frame_number)
+                track_zones: dict[int, Zone] = {}
                 for track in tracks:
                     zone = layout.classify(track.anchor, frame.shape)
+                    track_zones[track.tracking_id] = zone
                     crossing = counter.observe(
                         track_id=track.tracking_id,
                         zone=zone,
                         frame_number=frame_number,
                         confidence=track.confidence,
                     )
-                    trail = trails.setdefault(track.tracking_id, deque(maxlen=32))
-                    if state.overlay:
-                        _draw_track(frame, track, zone, trail)
+                    trails.setdefault(track.tracking_id, deque(maxlen=32))
                     if crossing:
                         event = _event_for_crossing(args, state, crossing)
                         result = api.send(event)
@@ -545,7 +672,7 @@ def run(args: argparse.Namespace) -> int:
                         events.append(event)
                         state.flash_until = frame_number + args.notify_cooldown
                         state.flash_text = (
-                            f"{crossing.direction} CONFIRMED · "
+                            f"{crossing.direction} CONFIRMED | "
                             f"OCCUPANCY {state.occupancy}"
                         )
                         print(
@@ -564,10 +691,21 @@ def run(args: argparse.Namespace) -> int:
                 elapsed = time.perf_counter() - started
                 fps_samples.append(1 / elapsed if elapsed > 0 else 0)
                 measured_fps = sum(fps_samples) / len(fps_samples)
+                display_frame, display_scale = _prepare_display_frame(
+                    frame, expand=not args.headless
+                )
                 if state.overlay:
-                    _draw_zone_overlay(frame, layout)
+                    for track in tracks:
+                        _draw_track(
+                            display_frame,
+                            track,
+                            track_zones[track.tracking_id],
+                            trails[track.tracking_id],
+                            display_scale,
+                        )
+                    _draw_zone_overlay(display_frame, layout)
                     _draw_panel(
-                        frame,
+                        display_frame,
                         state,
                         fps=measured_fps,
                         active_tracks=len(tracks),
@@ -575,7 +713,7 @@ def run(args: argparse.Namespace) -> int:
                         queue_count=api.queued_count,
                         frame_number=frame_number,
                     )
-                last_frame = frame
+                last_frame = display_frame
                 processed += 1
 
             if args.headless:
