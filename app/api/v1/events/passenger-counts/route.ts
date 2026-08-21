@@ -4,6 +4,23 @@ import { getIngestKey, persistPassengerEvent, recentPassengerEvents } from "@/db
 const sources = new Set(["apc", "vision", "payment", "manual", "import"]);
 const requiredStrings = ["eventId", "observedAt", "busId", "routeId", "stopId", "doorId"] as const;
 const requiredNumbers = ["boardings", "alightings", "occupancy", "capacity", "confidence"] as const;
+const encoder = new TextEncoder();
+
+async function authorized(request: Request, ingestKey: string): Promise<boolean> {
+  const provided = request.headers.get("authorization") ?? "";
+  const expected = `Bearer ${ingestKey}`;
+  const [providedHash, expectedHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(provided)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const providedBytes = new Uint8Array(providedHash);
+  const expectedBytes = new Uint8Array(expectedHash);
+  let difference = 0;
+  for (let index = 0; index < expectedBytes.length; index += 1) {
+    difference |= providedBytes[index] ^ expectedBytes[index];
+  }
+  return difference === 0;
+}
 
 function valid(event: PassengerCountEvent | null): event is PassengerCountEvent {
   return Boolean(
@@ -47,7 +64,7 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  if (request.headers.get("authorization") !== `Bearer ${ingestKey}`) {
+  if (!(await authorized(request, ingestKey))) {
     return Response.json(
       { accepted: false, persisted: false, retryable: false, eventId: event.eventId, error: "Unauthorized camera source" },
       { status: 401 },

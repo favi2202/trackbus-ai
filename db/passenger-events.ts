@@ -2,11 +2,6 @@ import { env } from "cloudflare:workers";
 
 import type { PassengerCountEvent } from "@/lib/contracts";
 
-type RuntimeEnv = {
-  DB?: D1Database;
-  TRACKBUS_INGEST_KEY?: string;
-};
-
 type EventRow = {
   event_id: string;
   schema_version: string;
@@ -84,18 +79,14 @@ const indexStatements = [
   "CREATE INDEX IF NOT EXISTS passenger_events_source_observed_idx ON passenger_count_events (source, observed_at)",
 ];
 
-function runtimeEnv(): RuntimeEnv {
-  return env as unknown as RuntimeEnv;
-}
-
 export function getD1(): D1Database {
-  const database = runtimeEnv().DB;
+  const database = env.DB;
   if (!database) throw new Error("TrackBus D1 storage is unavailable");
   return database;
 }
 
 export function getIngestKey(): string | undefined {
-  return runtimeEnv().TRACKBUS_INGEST_KEY;
+  return env.TRACKBUS_INGEST_KEY;
 }
 
 async function ensureSchema(database: D1Database): Promise<void> {

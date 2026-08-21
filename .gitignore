@@ -12,6 +12,7 @@
 /out/
 /dist/
 /.wrangler/
+/.cloudflare-runtime/
 /.sites-runtime/
 /outputs/
 /work/

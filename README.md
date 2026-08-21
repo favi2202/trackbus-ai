@@ -53,6 +53,9 @@ https://trackbus-showcase.favi-2202.chatgpt.site/api/v1/events/passenger-counts?
 The Live pilot tab polls the same source every two seconds. Forecast, dispatch,
 and passenger-app scenarios remain labeled synthetic.
 
+For a separate free `workers.dev` deployment, follow the
+[Cloudflare Workers deployment guide](docs/cloudflare-deployment.md).
+
 ## Real Vision showcase
 
 Install Python 3.11+ dependencies:
