@@ -17,7 +17,8 @@
     "cloudflare:types": "wrangler types --include-runtime false",
     "cloudflare:dry-run": "npm run build && wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "cloudflare:deploy": "npm run build && wrangler deploy",
-    "cloudflare:migrate": "wrangler d1 migrations apply DB --remote"
+    "cloudflare:migrations:list": "wrangler d1 migrations list trackbus-showcase-db --remote",
+    "cloudflare:migrate": "wrangler d1 migrations apply trackbus-showcase-db --remote"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
