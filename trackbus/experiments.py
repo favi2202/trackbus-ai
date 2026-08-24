@@ -72,6 +72,7 @@ _TRACKER_KEYS = {
     "track_buffer",
     "match_thresh",
     "fuse_score",
+    "continuity",
 }
 _FUSION_KEYS = {
     "method",

@@ -31,6 +31,19 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class ContinuityConfig:
+    """Optional, bounded TrackBus-level anonymous track continuity."""
+
+    enabled: bool = False
+    max_gap_frames: int = 3
+    max_centroid_distance: float = 0.08
+    minimum_iou: float = 0.05
+    maximum_size_ratio: float = 1.8
+    minimum_direction_cosine: float = -0.25
+    minimum_match_score: float = 0.55
+
+
+@dataclass(frozen=True)
 class TrackingConfig:
     tracker: str = "bytetrack.yaml"
     minimum_zone_frames: int = 3
@@ -47,6 +60,7 @@ class TrackingConfig:
     track_buffer: int | None = None
     match_thresh: float | None = None
     fuse_score: bool | None = None
+    continuity: ContinuityConfig = ContinuityConfig()
 
     @property
     def effective_minimum_origin_zone_frames(self) -> int:
@@ -391,6 +405,7 @@ def load_config(path: Path) -> AppConfig:
     )
     model_raw = _mapping(root.get("model", {}), "model")
     tracking_raw = _mapping(root.get("tracking", {}), "tracking")
+    continuity_raw = _mapping(tracking_raw.get("continuity", {}), "tracking.continuity")
     zones_raw = _mapping(root.get("zones"), "zones")
     outputs_raw = _mapping(root.get("outputs", {}), "outputs")
     camera_raw = _mapping(root.get("camera", {}), "camera")
@@ -426,6 +441,20 @@ def load_config(path: Path) -> AppConfig:
             "track_buffer",
             "match_thresh",
             "fuse_score",
+            "continuity",
+        },
+    )
+    _reject_unknown_keys(
+        continuity_raw,
+        "tracking.continuity",
+        {
+            "enabled",
+            "max_gap_frames",
+            "max_centroid_distance",
+            "minimum_iou",
+            "maximum_size_ratio",
+            "minimum_direction_cosine",
+            "minimum_match_score",
         },
     )
     _reject_unknown_keys(zones_raw, "zones", {"outside", "inside"})
@@ -566,6 +595,36 @@ def load_config(path: Path) -> AppConfig:
                 ),
                 fuse_score=_optional_bool(
                     tracking_raw.get("fuse_score"), "tracking.fuse_score"
+                ),
+                continuity=ContinuityConfig(
+                    enabled=_bool(
+                        continuity_raw.get("enabled", False),
+                        "tracking.continuity.enabled",
+                    ),
+                    max_gap_frames=_int(
+                        continuity_raw.get("max_gap_frames", 3),
+                        "tracking.continuity.max_gap_frames",
+                    ),
+                    max_centroid_distance=_float(
+                        continuity_raw.get("max_centroid_distance", 0.08),
+                        "tracking.continuity.max_centroid_distance",
+                    ),
+                    minimum_iou=_float(
+                        continuity_raw.get("minimum_iou", 0.05),
+                        "tracking.continuity.minimum_iou",
+                    ),
+                    maximum_size_ratio=_float(
+                        continuity_raw.get("maximum_size_ratio", 1.8),
+                        "tracking.continuity.maximum_size_ratio",
+                    ),
+                    minimum_direction_cosine=_float(
+                        continuity_raw.get("minimum_direction_cosine", -0.25),
+                        "tracking.continuity.minimum_direction_cosine",
+                    ),
+                    minimum_match_score=_float(
+                        continuity_raw.get("minimum_match_score", 0.55),
+                        "tracking.continuity.minimum_match_score",
+                    ),
                 ),
             ),
             zones=ZonesConfig(
@@ -773,6 +832,30 @@ def validate_config(config: AppConfig) -> None:
             raise ConfigError(f"'tracking.{name}' must be between 0 and 1.")
     if config.tracking.track_buffer is not None and config.tracking.track_buffer < 1:
         raise ConfigError("'tracking.track_buffer' must be at least 1.")
+    continuity = config.tracking.continuity
+    if continuity.max_gap_frames < 1 or continuity.max_gap_frames > 30:
+        raise ConfigError(
+            "'tracking.continuity.max_gap_frames' must be between 1 and 30."
+        )
+    if not 0.0 < continuity.max_centroid_distance <= 0.50:
+        raise ConfigError(
+            "'tracking.continuity.max_centroid_distance' must be greater than 0 "
+            "and at most 0.50."
+        )
+    if not 0.0 <= continuity.minimum_iou <= 1.0:
+        raise ConfigError("'tracking.continuity.minimum_iou' must be between 0 and 1.")
+    if not 1.0 <= continuity.maximum_size_ratio <= 10.0:
+        raise ConfigError(
+            "'tracking.continuity.maximum_size_ratio' must be between 1 and 10."
+        )
+    if not -1.0 <= continuity.minimum_direction_cosine <= 1.0:
+        raise ConfigError(
+            "'tracking.continuity.minimum_direction_cosine' must be between -1 and 1."
+        )
+    if not 0.0 <= continuity.minimum_match_score <= 1.0:
+        raise ConfigError(
+            "'tracking.continuity.minimum_match_score' must be between 0 and 1."
+        )
     fusion = config.detection_fusion
     if fusion.method != "nms":
         raise ConfigError("'detection_fusion.method' must be 'nms'.")

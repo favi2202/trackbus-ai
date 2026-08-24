@@ -65,6 +65,7 @@ class ProcessingSummary:
     tracker_backend: str
     tracker_config_path: str | None
     tracker_effective_config: dict[str, Any]
+    tracking_continuity: dict[str, Any]
     ultralytics_version: str | None
     person_detections_total: int
     raw_person_detections_total: int
@@ -449,6 +450,9 @@ class VideoProcessor:
             tracker_config_path=getattr(self.tracker, "tracker_config", None),
             tracker_effective_config=dict(
                 getattr(self.tracker, "effective_config", {})
+            ),
+            tracking_continuity=dict(
+                getattr(self.tracker, "continuity_summary", {"enabled": False})
             ),
             ultralytics_version=getattr(self.tracker, "ultralytics_version", None),
             # Preserve the v0.1 summary field's tracked-observation semantics.

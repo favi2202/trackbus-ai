@@ -131,6 +131,13 @@ latency—but deliberately do not claim precision, recall, F1, or a best accurac
 configuration. See the [detector benchmark guide](docs/detection-benchmark.md)
 and [failure audit](docs/vision-failure-audit.md).
 
+After establishing a detector baseline, compare the bounded ByteTrack profiles
+in `configs/tracking_fast.yaml`, `configs/tracking_balanced.yaml`, and
+`configs/tracking_occlusion.yaml`. TrackBus also provides an experimental,
+off-by-default short-gap continuity layer for conservative local ID stitching.
+See the [tracking continuity guide](docs/tracking-continuity.md) before enabling
+it on a camera.
+
 ## Verification
 
 ```bash

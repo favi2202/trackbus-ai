@@ -17,7 +17,11 @@ from trackbus.detection_export import (
 from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
 from trackbus.event_logger import EventLogger, derive_artifact_paths
 from trackbus.fusion import NmsDetectionFusion
-from trackbus.tracker import ByteTrackAdapter, TrackerAdapterError
+from trackbus.tracker import (
+    ByteTrackAdapter,
+    TrackContinuityAdapter,
+    TrackerAdapterError,
+)
 from trackbus.video_processor import VideoProcessingError, VideoProcessor
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
@@ -182,10 +186,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             device_label=device_label,
             precision=config.model.precision,
         )
-        tracker = ByteTrackAdapter(
+        base_tracker = ByteTrackAdapter(
             tracker_config=config.tracking.tracker,
             device_label=device_label,
             tracker_overrides=config.tracking.bytetrack_overrides(),
+        )
+        continuity = config.tracking.continuity
+        tracker = (
+            TrackContinuityAdapter(
+                base_tracker,
+                max_gap_frames=continuity.max_gap_frames,
+                max_centroid_distance=continuity.max_centroid_distance,
+                minimum_iou=continuity.minimum_iou,
+                maximum_size_ratio=continuity.maximum_size_ratio,
+                minimum_direction_cosine=continuity.minimum_direction_cosine,
+                minimum_match_score=continuity.minimum_match_score,
+            )
+            if continuity.enabled
+            else base_tracker
         )
         fusion = NmsDetectionFusion(
             iou_threshold=config.detection_fusion.iou_threshold,

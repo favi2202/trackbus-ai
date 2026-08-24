@@ -323,10 +323,7 @@ def _draw_track(
     )
     trail.append((round(track.anchor[0]), round(track.anchor[1])))
     display_trail = np.asarray(
-        [
-            (round(x * scale_x), round(y * scale_y))
-            for x, y in trail
-        ],
+        [(round(x * scale_x), round(y * scale_y)) for x, y in trail],
         dtype=np.int32,
     )
     if len(trail) > 1:
@@ -351,9 +348,7 @@ def _prepare_display_frame(
 
 
 def _text_width(text: str, scale: float, thickness: int = 1) -> int:
-    return cv2.getTextSize(
-        text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness
-    )[0][0]
+    return cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)[0][0]
 
 
 def _fitted_scale(
@@ -412,8 +407,7 @@ def _event_quality_label(event: PassengerCountEvent, *, compact: bool) -> str:
         "occupancy_boundary_clamped": "LIMIT" if compact else "OCC LIMIT",
     }
     rendered = [
-        labels.get(flag, flag.replace("_", " ").upper())
-        for flag in event.quality_flags
+        labels.get(flag, flag.replace("_", " ").upper()) for flag in event.quality_flags
     ]
     return "+".join(rendered)
 

@@ -22,6 +22,16 @@ tracking:
   zone_anchor: bottom_center
   zone_boundary_hysteresis: 0.0
   stale_track_timeout: 90
+  # Experimental TrackBus-level ID continuity. Disabled until a calibrated
+  # tracking/event benchmark shows it improves this camera without false merges.
+  continuity:
+    enabled: false
+    max_gap_frames: 3
+    max_centroid_distance: 0.08
+    minimum_iou: 0.05
+    maximum_size_ratio: 1.8
+    minimum_direction_cosine: -0.25
+    minimum_match_score: 0.55
 
 # All camera-calibration coordinates are normalized against the source frame.
 # detection_roi is a deprecated v0.1 compatibility key. Named views are cropped
