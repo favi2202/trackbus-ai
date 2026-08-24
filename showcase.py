@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default="yolo11n.pt")
     parser.add_argument("--confidence", type=float, default=0.35)
+    parser.add_argument(
+        "--detector-floor",
+        type=float,
+        default=0.10,
+        help="Lowest YOLO prediction passed to ByteTrack",
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="auto")
     parser.add_argument(
@@ -587,7 +593,11 @@ def export_events(events: Sequence[PassengerCountEvent]) -> Path:
 
 
 def run(args: argparse.Namespace) -> int:
-    if not 0 < args.confidence <= 1 or args.imgsz < 32 or args.frame_skip < 0:
+    if (
+        not 0 < args.detector_floor <= args.confidence <= 1
+        or args.imgsz < 32
+        or args.frame_skip < 0
+    ):
         raise ValueError("confidence, image size, and frame skip values are invalid")
     if args.capacity <= 0 or not 0 <= args.initial_occupancy <= args.capacity:
         raise ValueError("initial occupancy must fit a positive capacity")
@@ -605,8 +615,12 @@ def run(args: argparse.Namespace) -> int:
         args.imgsz,
         device=device,
         device_label=device_label,
+        detector_floor=args.detector_floor,
     )
     tracker = ByteTrackAdapter(args.tracker, device_label=device_label)
+    confidence_contract = tracker.confidence_contract(args.detector_floor)
+    if warning := confidence_contract.get("warning"):
+        LOGGER.warning("%s", warning)
     counter = CrossingStateMachine(
         minimum_zone_frames=args.minimum_zone_frames,
         maximum_gap_frames=args.maximum_transition_gap,

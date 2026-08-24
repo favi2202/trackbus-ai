@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 import cv2
 import numpy as np
 
-from showcase import RuntimeState, _draw_panel, _event_row, _prepare_display_frame
+from showcase import (
+    RuntimeState,
+    _draw_panel,
+    _event_row,
+    _prepare_display_frame,
+    build_parser,
+)
 from trackbus.event_contract import vision_event
 
 
@@ -146,3 +152,12 @@ def test_headless_source_keeps_original_resolution() -> None:
     display, scale = _prepare_display_frame(source, expand=False)
     assert display is source
     assert scale == (1.0, 1.0)
+
+
+def test_showcase_exposes_a_separate_detector_floor() -> None:
+    args = build_parser().parse_args(
+        ["--video", "bus.mp4", "--confidence", "0.35", "--detector-floor", "0.10"]
+    )
+
+    assert args.confidence == 0.35
+    assert args.detector_floor == 0.10

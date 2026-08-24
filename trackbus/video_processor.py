@@ -26,6 +26,7 @@ from trackbus.detection import AnchorMode, Detection, TrackedDetection
 from trackbus.detection_export import DetectionCsvExporter
 from trackbus.diagnostics import DoorwayDiagnostics
 from trackbus.event_logger import EventLogger
+from trackbus.failure_mining import FailureMiner
 from trackbus.interfaces import DetectionFusion, DetectorBackend, TrackerBackend
 from trackbus.views import (
     MultiViewInference,
@@ -59,6 +60,9 @@ class ProcessingSummary:
     average_fps: float
     model_used: str
     confidence_threshold: float
+    detector_floor: float
+    detector_tracker_confidence_contract: dict[str, Any]
+    detector_confidence_bands: dict[str, Any]
     inference_image_size: int
     model_precision: str
     device_used: str
@@ -93,6 +97,7 @@ class ProcessingSummary:
     event_suppression_counts: dict[str, int]
     crossing_corridor_configured: bool
     doorway_diagnostics: dict[str, Any]
+    failure_mining: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -114,6 +119,8 @@ class VideoProcessor:
         model_name: str,
         model_confidence: float,
         inference_image_size: int,
+        detector_floor: float | None = None,
+        confidence_contract: dict[str, Any] | None = None,
         model_precision: str = "fp32",
         camera_config: CameraConfig,
         diagnostics_config: DiagnosticsConfig,
@@ -123,6 +130,7 @@ class VideoProcessor:
         fusion: DetectionFusion | None = None,
         inference_views: tuple[InferenceViewConfig, ...] | None = None,
         detection_exporter: DetectionCsvExporter | None = None,
+        failure_miner: FailureMiner | None = None,
     ) -> None:
         if (detector is None) != (fusion is None):
             raise ValueError("detector and fusion must be supplied together")
@@ -134,6 +142,13 @@ class VideoProcessor:
         self.event_logger = event_logger
         self.model_name = model_name
         self.model_confidence = model_confidence
+        self.detector_floor = (
+            model_confidence if detector_floor is None else detector_floor
+        )
+        self.confidence_contract = confidence_contract or {
+            "detector_floor": self.detector_floor,
+            "warning": None,
+        }
         self.inference_image_size = inference_image_size
         self.model_precision = model_precision
         self.camera_config = camera_config
@@ -144,6 +159,7 @@ class VideoProcessor:
             camera_config
         )
         self.detection_exporter = detection_exporter
+        self.failure_miner = failure_miner
 
     @property
     def explicit_pipeline(self) -> bool:
@@ -190,6 +206,9 @@ class VideoProcessor:
         raw_detections_total = 0
         fused_detections_total = 0
         tracked_detections_total = 0
+        raw_low_confidence_total = 0
+        fused_low_confidence_total = 0
+        tracked_low_confidence_total = 0
         frames_with_raw_detections = 0
         frames_with_fused_detections = 0
         frames_with_person_detections = 0
@@ -274,6 +293,15 @@ class VideoProcessor:
                 raw_detections_total += len(raw)
                 fused_detections_total += len(fused)
                 tracked_detections_total += len(people)
+                raw_low_confidence_total += sum(
+                    detection.confidence < self.model_confidence for detection in raw
+                )
+                fused_low_confidence_total += sum(
+                    detection.confidence < self.model_confidence for detection in fused
+                )
+                tracked_low_confidence_total += sum(
+                    person.confidence < self.model_confidence for person in people
+                )
                 excluded_person_detections_total += len(excluded)
                 frames_with_raw_detections += bool(raw)
                 frames_with_fused_detections += bool(fused)
@@ -312,6 +340,7 @@ class VideoProcessor:
                     corridor_memberships,
                 )
                 memberships: dict[int, ZoneMembership] = {}
+                emitted_events = []
 
                 for person in people:
                     classification = zones.classify(
@@ -330,6 +359,7 @@ class VideoProcessor:
                         raw_zone=classification.raw,
                     )
                     if event is not None:
+                        emitted_events.append(event)
                         doorway_diagnostics.record_crossing(event)
                         self.event_logger.log_event(event, source_fps)
                         LOGGER.info(
@@ -379,6 +409,32 @@ class VideoProcessor:
                     },
                 )
 
+                if self.failure_miner is not None:
+                    counter_snapshots = {
+                        person.tracking_id: self.counter.track_snapshot(
+                            person.tracking_id
+                        )
+                        for person in people
+                    }
+                    possible_restarts = {
+                        tracking_id: diagnostic.possible_restart_of_tracking_id
+                        for tracking_id, diagnostic in (
+                            doorway_diagnostics.tracks.items()
+                        )
+                        if tracking_id in memberships
+                        and diagnostic.possible_restart_of_tracking_id is not None
+                    }
+                    self.failure_miner.observe_frame(
+                        frame_number=frame_number,
+                        timestamp_seconds=frame_number / source_fps,
+                        frame=frame,
+                        fused_detections=fused,
+                        tracks=people,
+                        snapshots=counter_snapshots,
+                        events=emitted_events,
+                        possible_restarts=possible_restarts,
+                    )
+
                 annotated = self._annotate(
                     frame,
                     zones,
@@ -424,6 +480,8 @@ class VideoProcessor:
                 f"{measured_tracker_updates} updates for {processed_frames} frames."
             )
         diagnostic_summary = doorway_diagnostics.summary()
+        if self.failure_miner is not None:
+            self.failure_miner.finalize()
         fusion_method = getattr(self.fusion, "method", "legacy_combined")
         fusion_iou = getattr(self.fusion, "iou_threshold", None)
         enabled_view_names = tuple(view.name for view in pixel_views)
@@ -443,6 +501,26 @@ class VideoProcessor:
             average_fps=round(processed_frames / elapsed, 2) if elapsed else 0.0,
             model_used=self.model_name,
             confidence_threshold=self.model_confidence,
+            detector_floor=self.detector_floor,
+            detector_tracker_confidence_contract=dict(self.confidence_contract),
+            detector_confidence_bands={
+                "low_band": (
+                    f"[{self.detector_floor:.3f}, {self.model_confidence:.3f})"
+                ),
+                "high_band": f"[{self.model_confidence:.3f}, 1.000]",
+                "raw_low_band_total": raw_low_confidence_total,
+                "raw_high_band_total": (
+                    raw_detections_total - raw_low_confidence_total
+                ),
+                "fused_low_band_total": fused_low_confidence_total,
+                "fused_high_band_total": (
+                    fused_detections_total - fused_low_confidence_total
+                ),
+                "tracked_low_band_total": tracked_low_confidence_total,
+                "tracked_high_band_total": (
+                    tracked_detections_total - tracked_low_confidence_total
+                ),
+            },
             inference_image_size=self.inference_image_size,
             model_precision=self.model_precision,
             device_used=getattr(self.tracker, "device_label", "unknown"),
@@ -503,6 +581,11 @@ class VideoProcessor:
                 self.camera_config.crossing_corridor is not None
             ),
             doorway_diagnostics=diagnostic_summary,
+            failure_mining=(
+                dict(self.failure_miner.summary)
+                if self.failure_miner is not None
+                else {"enabled": False}
+            ),
         )
         self.event_logger.write_summary(summary.to_dict())
         return summary

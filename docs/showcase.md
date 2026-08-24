@@ -35,10 +35,12 @@ and appears in the dashboard within about two seconds. Inspect the raw records a
 `/api/v1/events/passenger-counts?limit=50`. The API key is a bearer credential;
 keep it out of source files and prefer the environment variable to `--api-key`.
 
-Use `--model`, `--imgsz`, `--confidence`, `--device`, `--frame-skip`, and
-`--tracker` to match the edge hardware. CUDA requires a CUDA-enabled PyTorch
-install; use `--device cpu` when it is unavailable. Ultralytics `8.4.95` and
-`lap` are declared dependencies because the ByteTrack adapter is version-tested.
+Use `--model`, `--imgsz`, `--confidence`, `--detector-floor`, `--device`,
+`--frame-skip`, and `--tracker` to match the edge hardware. The detector floor
+defaults to `0.10`; weak detections may maintain an existing anonymous track but
+cannot start one. CUDA requires a CUDA-enabled PyTorch install; use `--device
+cpu` when it is unavailable. Ultralytics `8.4.95` and `lap` are declared
+dependencies because the ByteTrack adapter is version-tested.
 
 ## Controls
 

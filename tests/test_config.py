@@ -35,6 +35,8 @@ def test_valid_configuration_loads(tmp_path: Path) -> None:
 
     assert config.capacity == 40
     assert config.model.confidence == 0.4
+    assert config.model.detector_floor is None
+    assert config.model.effective_detector_floor == 0.4
     assert config.model.imgsz == 512
     assert config.zones.outside[2] == (1.0, 0.4)
     assert config.tracking.effective_minimum_origin_zone_frames == 2
@@ -43,6 +45,8 @@ def test_valid_configuration_loads(tmp_path: Path) -> None:
     assert config.tracking.event_cooldown_frames == 30
     assert config.tracking.zone_anchor == "bottom_center"
     assert config.tracking.zone_boundary_hysteresis == 0.0
+    assert config.diagnostics.failure_mining.enabled is False
+    assert config.diagnostics.failure_mining.capture_frames is False
 
 
 def test_event_stability_configuration_loads(tmp_path: Path) -> None:
@@ -133,6 +137,8 @@ def test_cli_model_settings_override_yaml(tmp_path: Path) -> None:
             "yolo11s.pt",
             "--confidence",
             "0.2",
+            "--detector-floor",
+            "0.1",
             "--imgsz",
             "960",
         ]
@@ -142,6 +148,7 @@ def test_cli_model_settings_override_yaml(tmp_path: Path) -> None:
 
     assert config.model.path == "yolo11s.pt"
     assert config.model.confidence == 0.2
+    assert config.model.detector_floor == 0.1
     assert config.model.imgsz == 960
 
 
@@ -156,6 +163,25 @@ def test_omitted_cli_model_settings_preserve_yaml(tmp_path: Path) -> None:
     assert config.model.path == "yolo11n.pt"
     assert config.model.confidence == 0.4
     assert config.model.imgsz == 512
+
+
+def test_detector_floor_is_separate_and_bounded_by_confidence(tmp_path: Path) -> None:
+    configured = VALID_CONFIG.replace(
+        "  confidence: 0.4", "  confidence: 0.4\n  detector_floor: 0.1"
+    )
+
+    config = load_config(write_config(tmp_path, configured))
+
+    assert config.model.confidence == 0.4
+    assert config.model.effective_detector_floor == 0.1
+
+    with pytest.raises(ConfigError, match="cannot exceed"):
+        load_config(
+            write_config(
+                tmp_path,
+                configured.replace("detector_floor: 0.1", "detector_floor: 0.5"),
+            )
+        )
 
 
 def test_camera_calibration_configuration_loads(tmp_path: Path) -> None:
@@ -205,6 +231,49 @@ def test_invalid_diagnostic_threshold_is_rejected(tmp_path: Path) -> None:
     content = VALID_CONFIG + "\ndiagnostics:\n  heavy_overlap_iou: -0.1\n"
 
     with pytest.raises(ConfigError, match="heavy_overlap_iou"):
+        load_config(write_config(tmp_path, content))
+
+
+def test_failure_mining_configuration_is_explicit_and_bounded(tmp_path: Path) -> None:
+    content = (
+        VALID_CONFIG
+        + """
+diagnostics:
+  failure_mining:
+    enabled: true
+    output_jsonl: output/failures.jsonl
+    capture_frames: true
+    frames_directory: output/failure-frames
+    maximum_records: 25
+    maximum_captured_frames: 3
+    jpeg_quality: 80
+    low_confidence_threshold: 0.3
+    short_track_maximum_frames: 4
+    sudden_detection_drop_ratio: 0.4
+"""
+    )
+
+    config = load_config(write_config(tmp_path, content))
+    mining = config.diagnostics.failure_mining
+
+    assert mining.enabled is True
+    assert mining.capture_frames is True
+    assert mining.maximum_records == 25
+    assert mining.maximum_captured_frames == 3
+    assert mining.output_jsonl == Path("output/failures.jsonl")
+
+
+def test_failure_frame_capture_cannot_be_enabled_implicitly(tmp_path: Path) -> None:
+    content = (
+        VALID_CONFIG
+        + """
+diagnostics:
+  failure_mining:
+    capture_frames: true
+"""
+    )
+
+    with pytest.raises(ConfigError, match="requires failure mining"):
         load_config(write_config(tmp_path, content))
 
 

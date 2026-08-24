@@ -30,11 +30,13 @@ tracking:
   tracker: configs/tracking_balanced.yaml
 ```
 
-Detector and tracker thresholds interact. YOLO removes predictions below
-`model.confidence` before ByteTrack sees them. A ByteTrack `track_low_thresh` of
-`0.10` cannot recover `0.10–0.19` predictions if YOLO ran at `0.20`. Establish a
-detector threshold with `trackbus.benchmark_detection`, then hold it constant
-while comparing tracking profiles.
+Detector and tracker thresholds interact. TrackBus now uses
+`model.detector_floor` as the actual YOLO inference floor and keeps
+`model.confidence` as a high-confidence reference. When the floor is omitted,
+legacy configurations still use `model.confidence` as the YOLO cutoff. Keep the
+detector floor at or below ByteTrack's `track_low_thresh` when the complete low
+association band is required. See
+[`vision-readiness-diagnostics.md`](vision-readiness-diagnostics.md).
 
 ## Optional continuity layer
 

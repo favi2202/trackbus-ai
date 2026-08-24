@@ -68,6 +68,7 @@ class UltralyticsDetector:
         *,
         device: str | int,
         device_label: str,
+        detector_floor: float | None = None,
         half: bool = False,
         precision: str | None = None,
     ) -> None:
@@ -82,6 +83,11 @@ class UltralyticsDetector:
             )
         self.model_path = model_path
         self.confidence = confidence
+        self.detector_floor = confidence if detector_floor is None else detector_floor
+        if not 0.0 < self.detector_floor <= confidence:
+            raise ValueError(
+                "detector_floor must be greater than 0 and at most confidence"
+            )
         self.image_size = image_size
         self.device = device
         self.device_label = device_label
@@ -117,7 +123,7 @@ class UltralyticsDetector:
         prediction_options: dict[str, Any] = {
             "source": image,
             "classes": [self.PERSON_CLASS_ID],
-            "conf": self.confidence,
+            "conf": getattr(self, "detector_floor", self.confidence),
             "imgsz": self.image_size,
             "device": self.device,
             "verbose": False,

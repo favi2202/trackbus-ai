@@ -2,7 +2,10 @@
 # bottom-right of any video resolution. Adjust these polygons for the camera.
 model:
   path: yolo11n.pt
+  # YOLO keeps weak observations for ByteTrack; confidence remains the
+  # high-confidence reference used by diagnostics and legacy configurations.
   confidence: 0.35
+  detector_floor: 0.10
   imgsz: 640
   # FP16 is enabled only on a supported CUDA device; CPU safely disables it.
   precision: fp32
@@ -69,6 +72,19 @@ diagnostics:
   export_detection_csv: false
   debug_visualization: false
   trajectory_length: 30
+  # Local evidence collection is opt-in. Metadata is written by default;
+  # source frames require a second explicit opt-in and remain bounded.
+  failure_mining:
+    enabled: false
+    output_jsonl: null
+    capture_frames: false
+    frames_directory: null
+    maximum_records: 500
+    maximum_captured_frames: 50
+    jpeg_quality: 85
+    low_confidence_threshold: null
+    short_track_maximum_frames: 5
+    sudden_detection_drop_ratio: 0.50
 
 detection_fusion:
   method: nms

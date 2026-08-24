@@ -7,7 +7,11 @@ import numpy as np
 import pytest
 
 from trackbus.detection import Detection
-from trackbus.tracker import ByteTrackAdapter, TrackerAdapterError
+from trackbus.tracker import (
+    ByteTrackAdapter,
+    TrackerAdapterError,
+    validate_confidence_contract,
+)
 
 
 class FakeBoxes:
@@ -236,6 +240,39 @@ def test_adapter_rejects_remote_or_missing_tracker_configuration() -> None:
             ByteTrackAdapter(value, device_label="cpu")
     with pytest.raises(TrackerAdapterError, match="existing local file"):
         ByteTrackAdapter("definitely-missing-tracker.yaml", device_label="cpu")
+
+
+def test_confidence_contract_rejects_weak_new_track_threshold() -> None:
+    with pytest.raises(TrackerAdapterError, match="weak detections"):
+        validate_confidence_contract(
+            0.10,
+            {
+                "track_low_thresh": 0.10,
+                "track_high_thresh": 0.25,
+                "new_track_thresh": 0.20,
+            },
+        )
+
+
+def test_real_bytetrack_uses_weak_detection_only_for_existing_track() -> None:
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    weak = make_detection((20.0, 20.0, 40.0, 80.0), confidence=0.15)
+    strong = make_detection((20.0, 20.0, 40.0, 80.0), confidence=0.80)
+
+    new_track_adapter = ByteTrackAdapter(
+        "configs/tracking_balanced.yaml", device_label="cpu"
+    )
+    assert new_track_adapter.update([weak], frame) == []
+
+    existing_track_adapter = ByteTrackAdapter(
+        "configs/tracking_balanced.yaml", device_label="cpu"
+    )
+    started = existing_track_adapter.update([strong], frame)
+    maintained = existing_track_adapter.update([weak], frame)
+
+    assert len(started) == len(maintained) == 1
+    assert maintained[0].tracking_id == started[0].tracking_id
+    assert maintained[0].confidence == pytest.approx(0.15)
 
 
 def test_installed_ultralytics_bytetrack_contract_and_id_continuity() -> None:

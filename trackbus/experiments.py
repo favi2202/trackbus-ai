@@ -81,7 +81,14 @@ _FUSION_KEYS = {
     "prefer_full_frame",
 }
 _APP_CONFIG_KEYS: dict[str, set[str] | None] = {
-    "model": {"path", "confidence", "imgsz", "precision", "half"},
+    "model": {
+        "path",
+        "confidence",
+        "detector_floor",
+        "imgsz",
+        "precision",
+        "half",
+    },
     "tracking": _TRACKER_KEYS - {"config"} | {"tracker"},
     "zones": {"outside", "inside"},
     "outputs": {
@@ -115,6 +122,7 @@ _APP_CONFIG_KEYS: dict[str, set[str] | None] = {
         "export_detection_csv",
         "debug_visualization",
         "trajectory_length",
+        "failure_mining",
     },
     "detection_fusion": _FUSION_KEYS,
     "capacity": None,
@@ -1491,7 +1499,9 @@ def _reject_protected_overrides(overrides: Mapping[str, Any], name: str) -> None
     if isinstance(model, Mapping):
         protected.extend(
             f"model.{key}"
-            for key in sorted(set(model) & {"path", "confidence", "imgsz"})
+            for key in sorted(
+                set(model) & {"path", "confidence", "detector_floor", "imgsz"}
+            )
         )
     if "tracking" in overrides:
         protected.append("tracking (use the run's tracker mapping)")

@@ -16,6 +16,11 @@ from trackbus.detection_export import (
 )
 from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
 from trackbus.event_logger import EventLogger, derive_artifact_paths
+from trackbus.failure_mining import (
+    FailureMiner,
+    FailureMiningError,
+    derive_failure_paths,
+)
 from trackbus.fusion import NmsDetectionFusion
 from trackbus.tracker import (
     ByteTrackAdapter,
@@ -70,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--confidence", type=_confidence, help="YOLO threshold (0, 1]")
     parser.add_argument(
+        "--detector-floor",
+        type=_confidence,
+        help=(
+            "Lowest YOLO prediction retained for ByteTrack; cannot exceed confidence"
+        ),
+    )
+    parser.add_argument(
         "--imgsz",
         type=_image_size,
         help="YOLO inference image size in pixels (minimum 32)",
@@ -98,6 +110,7 @@ def _load_runtime_config(args: argparse.Namespace) -> AppConfig:
         initial_occupancy=args.initial_occupancy,
         device=args.device,
         confidence=args.confidence,
+        detector_floor=args.detector_floor,
         model=args.model,
         imgsz=args.imgsz,
     )
@@ -153,6 +166,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             config.outputs.fused_detections_csv,
             config.outputs.tracks_csv,
         )
+        failure_jsonl, failure_frames = derive_failure_paths(
+            configured_output,
+            config.diagnostics.failure_mining.output_jsonl,
+            config.diagnostics.failure_mining.frames_directory,
+        )
+        optional_artifacts: dict[str, Path] = {}
+        if config.diagnostics.failure_mining.enabled:
+            optional_artifacts["failure_jsonl"] = failure_jsonl
         artifacts = _validated_artifact_paths(
             input_path,
             video=configured_output,
@@ -161,6 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_detections_csv=raw_path,
             fused_detections_csv=fused_path,
             tracks_csv=tracks_path,
+            **optional_artifacts,
         )
         output_path = artifacts["video"]
         csv_path = artifacts["events_csv"]
@@ -168,12 +190,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         raw_path = artifacts["raw_detections_csv"]
         fused_path = artifacts["fused_detections_csv"]
         tracks_path = artifacts["tracks_csv"]
+        if config.diagnostics.failure_mining.enabled:
+            failure_jsonl = artifacts["failure_jsonl"]
+            resolved_failure_frames = failure_frames.expanduser().resolve()
+            if resolved_failure_frames in artifacts.values():
+                raise VideoProcessingError(
+                    "Failure frame directory must not alias an input or output file."
+                )
+            failure_frames = resolved_failure_frames
 
         device, device_label = resolve_device(config.device)
         LOGGER.info(
-            "Loading model %s on %s (confidence=%.3f, imgsz=%d, precision=%s)",
+            "Loading model %s on %s (detector_floor=%.3f, "
+            "confidence_reference=%.3f, imgsz=%d, precision=%s)",
             config.model.path,
             device_label,
+            config.model.effective_detector_floor,
             config.model.confidence,
             config.model.imgsz,
             config.model.precision,
@@ -184,6 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config.model.imgsz,
             device=device,
             device_label=device_label,
+            detector_floor=config.model.effective_detector_floor,
             precision=config.model.precision,
         )
         base_tracker = ByteTrackAdapter(
@@ -191,6 +224,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             device_label=device_label,
             tracker_overrides=config.tracking.bytetrack_overrides(),
         )
+        confidence_contract = base_tracker.confidence_contract(
+            config.model.effective_detector_floor
+        )
+        if warning := confidence_contract.get("warning"):
+            LOGGER.warning("%s", warning)
         continuity = config.tracking.continuity
         tracker = (
             TrackContinuityAdapter(
@@ -234,6 +272,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fused_path=fused_path,
                 tracks_path=tracks_path,
             ) as detection_exporter,
+            FailureMiner(
+                config.diagnostics.failure_mining,
+                output_path=failure_jsonl,
+                frames_directory=failure_frames,
+                low_confidence_threshold=(
+                    config.diagnostics.failure_mining.low_confidence_threshold
+                    or config.model.confidence
+                ),
+                edge_margin_pixels=config.diagnostics.edge_margin_pixels,
+                heavy_overlap_iou=config.diagnostics.heavy_overlap_iou,
+                initial_occupancy=config.initial_occupancy,
+            ) as failure_miner,
         ):
             processor = VideoProcessor(
                 tracker=tracker,
@@ -244,6 +294,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 event_logger=event_logger,
                 model_name=config.model.path,
                 model_confidence=config.model.confidence,
+                detector_floor=config.model.effective_detector_floor,
+                confidence_contract=confidence_contract,
                 inference_image_size=config.model.imgsz,
                 model_precision=detector.precision,
                 camera_config=config.camera,
@@ -251,6 +303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 zone_anchor=config.tracking.zone_anchor,
                 zone_boundary_hysteresis=(config.tracking.zone_boundary_hysteresis),
                 detection_exporter=detection_exporter,
+                failure_miner=failure_miner,
             )
             summary = processor.process(input_path, output_path, show=args.show)
 
@@ -268,11 +321,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             LOGGER.info("Raw detections: %s", raw_path)
             LOGGER.info("Fused detections: %s", fused_path)
             LOGGER.info("Tracks: %s", tracks_path)
+        if config.diagnostics.failure_mining.enabled:
+            LOGGER.info("Failure evidence: %s", failure_jsonl)
+            if config.diagnostics.failure_mining.capture_frames:
+                LOGGER.warning(
+                    "Failure frames may contain personal data: %s", failure_frames
+                )
         return 0
     except (
         ConfigError,
         DetectorError,
         TrackerAdapterError,
+        FailureMiningError,
         VideoProcessingError,
         OSError,
         ValueError,

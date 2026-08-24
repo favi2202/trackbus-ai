@@ -84,9 +84,9 @@ python showcase.py --camera 0 --api-url https://trackbus-showcase.favi-2202.chat
 
 On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
 
-Useful overrides include `--model`, `--confidence`, `--imgsz`, `--device`,
-`--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`, `--bus-id`,
-`--route-id`, `--stop-id`, and `--door-id`. Prefer the
+Useful overrides include `--model`, `--confidence`, `--detector-floor`, `--imgsz`,
+`--device`, `--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`,
+`--bus-id`, `--route-id`, `--stop-id`, and `--door-id`. Prefer the
 `TRACKBUS_API_KEY` environment variable over `--api-key` so the key does not
 appear in shell history. The default zones are a safe presentation
 starting point; a real camera must be calibrated for its doorway geometry.
@@ -137,6 +137,20 @@ in `configs/tracking_fast.yaml`, `configs/tracking_balanced.yaml`, and
 off-by-default short-gap continuity layer for conservative local ID stitching.
 See the [tracking continuity guide](docs/tracking-continuity.md) before enabling
 it on a camera.
+
+Before the next representative video test, run the bounded camera-quality
+analyzer and, when necessary, enable metadata-only failure mining. TrackBus now
+passes detections from a separate `model.detector_floor` to ByteTrack so weak
+observations may preserve an existing anonymous track without starting a new
+one. See the
+[vision readiness diagnostics guide](docs/vision-readiness-diagnostics.md).
+
+```powershell
+python -m trackbus.camera_quality `
+  --source ".\videos\bus-test.mp4" `
+  --config ".\configs\default.yaml" `
+  --output ".\data\output\bus-test.camera-quality.json"
+```
 
 ## Verification
 

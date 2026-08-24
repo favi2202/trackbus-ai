@@ -21,6 +21,65 @@ class TrackerAdapterError(RuntimeError):
     """Raised when the installed Ultralytics tracker contract is incompatible."""
 
 
+def validate_confidence_contract(
+    detector_floor: float,
+    tracker_config: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate and describe the detector-to-ByteTrack confidence handoff.
+
+    ByteTrack uses predictions below ``track_high_thresh`` only to associate an
+    existing track. A new track must require at least ``new_track_thresh``. The
+    detector may deliberately run above ``track_low_thresh`` for a legacy camera,
+    but the returned warning makes the unavailable low band explicit.
+    """
+
+    try:
+        low = float(tracker_config["track_low_thresh"])
+        high = float(tracker_config["track_high_thresh"])
+        new = float(tracker_config["new_track_thresh"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TrackerAdapterError(
+            "ByteTrack confidence settings must include finite low, high, and "
+            "new-track thresholds."
+        ) from exc
+    if not all(
+        math.isfinite(value) and 0.0 <= value <= 1.0 for value in (low, high, new)
+    ):
+        raise TrackerAdapterError(
+            "ByteTrack low, high, and new-track thresholds must be between 0 and 1."
+        )
+    if low > high:
+        raise TrackerAdapterError(
+            "ByteTrack track_low_thresh cannot exceed track_high_thresh."
+        )
+    if new < high:
+        raise TrackerAdapterError(
+            "ByteTrack new_track_thresh cannot be below track_high_thresh; weak "
+            "detections must not create new tracks."
+        )
+    if not math.isfinite(detector_floor) or not 0.0 < detector_floor <= 1.0:
+        raise TrackerAdapterError(
+            "Detector floor must be greater than 0 and at most 1."
+        )
+
+    warning = None
+    if detector_floor > low:
+        warning = (
+            f"detector floor {detector_floor:.3f} is above ByteTrack's low "
+            f"threshold {low:.3f}; predictions below the detector floor remain "
+            "unavailable for track recovery"
+        )
+    return {
+        "detector_floor": detector_floor,
+        "track_low_thresh": low,
+        "track_high_thresh": high,
+        "new_track_thresh": new,
+        "full_low_band_available": detector_floor <= low,
+        "weak_detections_can_start_tracks": False,
+        "warning": warning,
+    }
+
+
 @dataclass
 class _ContinuityState:
     """Short-lived, video-local geometry for one stable anonymous track."""
@@ -141,6 +200,10 @@ class ByteTrackAdapter:
                     "fuse_score",
                 )
             }
+            validate_confidence_contract(
+                float(self.effective_config["track_low_thresh"]),
+                self.effective_config,
+            )
             self._boxes_type = Boxes
             self._tracker = BYTETracker(args=args)
         except TrackerAdapterError:
@@ -151,6 +214,11 @@ class ByteTrackAdapter:
                 f"from '{trusted_tracker_config}'. Tested with Ultralytics "
                 f"{self.COMPATIBLE_ULTRALYTICS_VERSION}: {exc}"
             ) from exc
+
+    def confidence_contract(self, detector_floor: float) -> dict[str, object]:
+        """Return the validated confidence handoff for run summaries."""
+
+        return validate_confidence_contract(detector_floor, self.effective_config)
 
     def update(
         self,

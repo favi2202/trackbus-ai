@@ -24,10 +24,17 @@ NormalizedRoi = tuple[float, float, float, float]
 class ModelConfig:
     path: str = "yolo11n.pt"
     confidence: float = 0.35
+    detector_floor: float | None = None
     imgsz: int = 640
     precision: str = "fp32"
     half: bool = False
     legacy_half_configured: bool = False
+
+    @property
+    def effective_detector_floor(self) -> float:
+        """Return the actual YOLO inference floor with legacy compatibility."""
+
+        return self.confidence if self.detector_floor is None else self.detector_floor
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,22 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class FailureMiningConfig:
+    """Bounded, local-only evidence collection for difficult frames."""
+
+    enabled: bool = False
+    output_jsonl: Path | None = None
+    capture_frames: bool = False
+    frames_directory: Path | None = None
+    maximum_records: int = 500
+    maximum_captured_frames: int = 50
+    jpeg_quality: int = 85
+    low_confidence_threshold: float | None = None
+    short_track_maximum_frames: int = 5
+    sudden_detection_drop_ratio: float = 0.50
+
+
+@dataclass(frozen=True)
 class DiagnosticsConfig:
     nearby_distance_normalized: float = 0.12
     heavy_overlap_iou: float = 0.50
@@ -138,6 +161,7 @@ class DiagnosticsConfig:
     export_detection_csv: bool = False
     debug_visualization: bool = False
     trajectory_length: int = 30
+    failure_mining: FailureMiningConfig = FailureMiningConfig()
 
 
 @dataclass(frozen=True)
@@ -180,6 +204,7 @@ class AppConfig:
         initial_occupancy: int | None = None,
         device: str | None = None,
         confidence: float | None = None,
+        detector_floor: float | None = None,
         model: str | None = None,
         imgsz: int | None = None,
     ) -> AppConfig:
@@ -190,6 +215,11 @@ class AppConfig:
             path=model if model is not None else self.model.path,
             confidence=(
                 confidence if confidence is not None else self.model.confidence
+            ),
+            detector_floor=(
+                detector_floor
+                if detector_floor is not None
+                else self.model.detector_floor
             ),
             imgsz=imgsz if imgsz is not None else self.model.imgsz,
         )
@@ -411,12 +441,16 @@ def load_config(path: Path) -> AppConfig:
     camera_raw = _mapping(root.get("camera", {}), "camera")
     lanes_raw = _mapping(camera_raw.get("doorway_lanes", {}), "camera.doorway_lanes")
     diagnostics_raw = _mapping(root.get("diagnostics", {}), "diagnostics")
+    failure_mining_raw = _mapping(
+        diagnostics_raw.get("failure_mining", {}),
+        "diagnostics.failure_mining",
+    )
     fusion_raw = _mapping(root.get("detection_fusion", {}), "detection_fusion")
 
     _reject_unknown_keys(
         model_raw,
         "model",
-        {"path", "confidence", "imgsz", "precision", "half"},
+        {"path", "confidence", "detector_floor", "imgsz", "precision", "half"},
     )
     if "precision" in model_raw and "half" in model_raw:
         raise ConfigError(
@@ -505,6 +539,23 @@ def load_config(path: Path) -> AppConfig:
             "export_detection_csv",
             "debug_visualization",
             "trajectory_length",
+            "failure_mining",
+        },
+    )
+    _reject_unknown_keys(
+        failure_mining_raw,
+        "diagnostics.failure_mining",
+        {
+            "enabled",
+            "output_jsonl",
+            "capture_frames",
+            "frames_directory",
+            "maximum_records",
+            "maximum_captured_frames",
+            "jpeg_quality",
+            "low_confidence_threshold",
+            "short_track_maximum_frames",
+            "sudden_detection_drop_ratio",
         },
     )
     _reject_unknown_keys(
@@ -536,6 +587,9 @@ def load_config(path: Path) -> AppConfig:
                 path=str(model_raw.get("path", "yolo11n.pt")),
                 confidence=_float(
                     model_raw.get("confidence", 0.35), "model.confidence"
+                ),
+                detector_floor=_optional_float(
+                    model_raw.get("detector_floor"), "model.detector_floor"
                 ),
                 imgsz=_int(model_raw.get("imgsz", 640), "model.imgsz"),
                 precision=model_precision,
@@ -736,6 +790,48 @@ def load_config(path: Path) -> AppConfig:
                     diagnostics_raw.get("trajectory_length", 30),
                     "diagnostics.trajectory_length",
                 ),
+                failure_mining=FailureMiningConfig(
+                    enabled=_bool(
+                        failure_mining_raw.get("enabled", False),
+                        "diagnostics.failure_mining.enabled",
+                    ),
+                    output_jsonl=_optional_path(
+                        failure_mining_raw.get("output_jsonl"),
+                        "diagnostics.failure_mining.output_jsonl",
+                    ),
+                    capture_frames=_bool(
+                        failure_mining_raw.get("capture_frames", False),
+                        "diagnostics.failure_mining.capture_frames",
+                    ),
+                    frames_directory=_optional_path(
+                        failure_mining_raw.get("frames_directory"),
+                        "diagnostics.failure_mining.frames_directory",
+                    ),
+                    maximum_records=_int(
+                        failure_mining_raw.get("maximum_records", 500),
+                        "diagnostics.failure_mining.maximum_records",
+                    ),
+                    maximum_captured_frames=_int(
+                        failure_mining_raw.get("maximum_captured_frames", 50),
+                        "diagnostics.failure_mining.maximum_captured_frames",
+                    ),
+                    jpeg_quality=_int(
+                        failure_mining_raw.get("jpeg_quality", 85),
+                        "diagnostics.failure_mining.jpeg_quality",
+                    ),
+                    low_confidence_threshold=_optional_float(
+                        failure_mining_raw.get("low_confidence_threshold"),
+                        "diagnostics.failure_mining.low_confidence_threshold",
+                    ),
+                    short_track_maximum_frames=_int(
+                        failure_mining_raw.get("short_track_maximum_frames", 5),
+                        "diagnostics.failure_mining.short_track_maximum_frames",
+                    ),
+                    sudden_detection_drop_ratio=_float(
+                        failure_mining_raw.get("sudden_detection_drop_ratio", 0.50),
+                        "diagnostics.failure_mining.sudden_detection_drop_ratio",
+                    ),
+                ),
             ),
             detection_fusion=DetectionFusionConfig(
                 method=str(fusion_raw.get("method", "nms")),
@@ -776,6 +872,15 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("'model.path' cannot be empty.")
     if not 0.0 < config.model.confidence <= 1.0:
         raise ConfigError("'model.confidence' must be greater than 0 and at most 1.")
+    if not 0.0 < config.model.effective_detector_floor <= 1.0:
+        raise ConfigError(
+            "'model.detector_floor' must be greater than 0 and at most 1."
+        )
+    if config.model.effective_detector_floor > config.model.confidence:
+        raise ConfigError(
+            "'model.detector_floor' cannot exceed 'model.confidence'; the floor "
+            "must preserve the configured high-confidence band."
+        )
     if config.model.imgsz < 32:
         raise ConfigError("'model.imgsz' must be at least 32 pixels.")
     if config.model.precision not in {"fp32", "fp16"}:
@@ -905,6 +1010,48 @@ def validate_config(config: AppConfig) -> None:
         )
     if diagnostics.trajectory_length < 1:
         raise ConfigError("'diagnostics.trajectory_length' must be at least 1.")
+    failure_mining = diagnostics.failure_mining
+    if failure_mining.capture_frames and not failure_mining.enabled:
+        raise ConfigError(
+            "'diagnostics.failure_mining.capture_frames' requires failure mining "
+            "to be enabled."
+        )
+    if not 1 <= failure_mining.maximum_records <= 10_000:
+        raise ConfigError(
+            "'diagnostics.failure_mining.maximum_records' must be between 1 and 10000."
+        )
+    if not 0 <= failure_mining.maximum_captured_frames <= 500:
+        raise ConfigError(
+            "'diagnostics.failure_mining.maximum_captured_frames' must be between "
+            "0 and 500."
+        )
+    if failure_mining.capture_frames and failure_mining.maximum_captured_frames == 0:
+        raise ConfigError(
+            "'diagnostics.failure_mining.maximum_captured_frames' must be positive "
+            "when frame capture is enabled."
+        )
+    if not 40 <= failure_mining.jpeg_quality <= 100:
+        raise ConfigError(
+            "'diagnostics.failure_mining.jpeg_quality' must be between 40 and 100."
+        )
+    if (
+        failure_mining.low_confidence_threshold is not None
+        and not 0.0 < failure_mining.low_confidence_threshold <= 1.0
+    ):
+        raise ConfigError(
+            "'diagnostics.failure_mining.low_confidence_threshold' must be greater "
+            "than 0 and at most 1."
+        )
+    if not 1 <= failure_mining.short_track_maximum_frames <= 30:
+        raise ConfigError(
+            "'diagnostics.failure_mining.short_track_maximum_frames' must be "
+            "between 1 and 30."
+        )
+    if not 0.0 <= failure_mining.sudden_detection_drop_ratio <= 1.0:
+        raise ConfigError(
+            "'diagnostics.failure_mining.sudden_detection_drop_ratio' must be "
+            "between 0 and 1."
+        )
     if config.capacity < 1:
         raise ConfigError("'capacity' must be at least 1.")
     if config.initial_occupancy < 0:
