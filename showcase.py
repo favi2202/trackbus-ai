@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import os
 import sys
@@ -19,9 +20,11 @@ import numpy as np
 import yaml
 
 from trackbus.api_client import TrackBusApiClient
-from trackbus.detection import TrackedDetection
+from trackbus.detection import Detection, TrackedDetection
 from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
 from trackbus.event_contract import PassengerCountEvent, vision_event
+from trackbus.fusion import box_iou
+from trackbus.preprocessing import PreprocessingDetector, PreprocessingProfile
 from trackbus.showcase_zones import (
     CrossingEvent,
     CrossingStateMachine,
@@ -53,6 +56,18 @@ class RuntimeState:
     api_status: str = "OFFLINE QUEUE"
     flash_until: int = -1
     flash_text: str = ""
+
+
+@dataclass(frozen=True)
+class ShowcaseDiagnostics:
+    """Static configuration and camera evidence shown in the live overlay."""
+
+    model_name: str
+    image_size: int
+    detector_floor: float
+    tracker_profile: str
+    preprocessing_profile: str
+    camera_quality_status: str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lowest YOLO prediction passed to ByteTrack",
     )
     parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument(
+        "--preprocessing-profile",
+        choices=tuple(profile.value for profile in PreprocessingProfile),
+        default=PreprocessingProfile.NONE.value,
+        help="Experimental same-size preprocessing; disabled by default",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--frame-skip",
@@ -100,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Decode but skip this many frames between inference steps",
     )
     parser.add_argument("--tracker", default="configs/bytetrack_trackbus.yaml")
+    parser.add_argument(
+        "--camera-quality-report",
+        type=Path,
+        help="Optional JSON output from python -m trackbus.camera_quality",
+    )
     parser.add_argument("--minimum-zone-frames", type=int, default=2)
     parser.add_argument("--maximum-transition-gap", type=int, default=45)
     parser.add_argument(
@@ -432,6 +458,66 @@ def _event_row(event: PassengerCountEvent, *, compact: bool) -> str:
     )
 
 
+def load_camera_quality_status(path: Path | None) -> str:
+    """Read one diagnostics-only camera status without inventing a result."""
+
+    if path is None:
+        return "NOT CHECKED"
+    resolved = path.expanduser().resolve()
+    try:
+        document = json.loads(resolved.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"Could not read camera-quality report: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Camera-quality report is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError("Camera-quality report must contain a JSON object")
+    status = document.get("status")
+    if status not in {"GOOD", "MARGINAL", "UNSUITABLE"}:
+        raise ValueError(
+            "Camera-quality report status must be GOOD, MARGINAL, or UNSUITABLE"
+        )
+    if document.get("diagnostic_not_accuracy") is not True:
+        raise ValueError(
+            "Camera-quality report must declare diagnostic_not_accuracy=true"
+        )
+    return str(status)
+
+
+def runtime_failure_flags(
+    detections: Sequence[Detection],
+    frame_shape: tuple[int, ...],
+    *,
+    operational_confidence: float,
+    zero_detection_streak: int,
+    edge_margin_pixels: int = 2,
+    overlap_iou_threshold: float = 0.50,
+) -> tuple[str, ...]:
+    """Return concise, frame-local warnings; these are not accuracy metrics."""
+
+    flags: list[str] = []
+    if zero_detection_streak >= 5:
+        flags.append("DETECTION GAP")
+    if any(detection.confidence < operational_confidence for detection in detections):
+        flags.append("LOW CONF")
+    height, width = frame_shape[:2]
+    if any(
+        detection.bounding_box[0] <= edge_margin_pixels
+        or detection.bounding_box[1] <= edge_margin_pixels
+        or detection.bounding_box[2] >= width - 1 - edge_margin_pixels
+        or detection.bounding_box[3] >= height - 1 - edge_margin_pixels
+        for detection in detections
+    ):
+        flags.append("EDGE CLIP")
+    if any(
+        box_iou(first.bounding_box, second.bounding_box) >= overlap_iou_threshold
+        for index, first in enumerate(detections)
+        for second in detections[index + 1 :]
+    ):
+        flags.append("OVERLAP")
+    return tuple(flags)
+
+
 def _draw_panel(
     frame: np.ndarray,
     state: RuntimeState,
@@ -441,6 +527,8 @@ def _draw_panel(
     events: deque[PassengerCountEvent],
     queue_count: int,
     frame_number: int,
+    diagnostics: ShowcaseDiagnostics | None = None,
+    failure_flags: Sequence[str] = (),
 ) -> None:
     height, width = frame.shape[:2]
     padding = 18
@@ -498,8 +586,48 @@ def _draw_panel(
         thickness=1,
     )
 
+    diagnostics_height = 0
+    if diagnostics is not None:
+        diagnostics_height = 48
+        ribbon_top = header_height
+        cv2.rectangle(
+            frame,
+            (0, ribbon_top),
+            (width, ribbon_top + diagnostics_height),
+            (8, 27, 36),
+            -1,
+        )
+        config_text = (
+            f"MODEL {Path(diagnostics.model_name).name} | IMG {diagnostics.image_size} "
+            f"| FLOOR {diagnostics.detector_floor:.2f} | "
+            f"TRACKER {Path(diagnostics.tracker_profile).name} | "
+            f"PRE {diagnostics.preprocessing_profile}"
+        )
+        rendered_flags = "+".join(failure_flags) if failure_flags else "NONE"
+        health_text = (
+            f"CAMERA {diagnostics.camera_quality_status} | FLAGS {rendered_flags} "
+            f"| {state.api_status} | QUEUED {queue_count}"
+        )
+        available = max(1, width - padding * 2)
+        _put_fitted_text(
+            frame,
+            config_text,
+            (padding, ribbon_top + 19),
+            max_width=available,
+            preferred_scale=0.36,
+            color=(180, 205, 215),
+        )
+        _put_fitted_text(
+            frame,
+            health_text,
+            (padding, ribbon_top + 39),
+            max_width=available,
+            preferred_scale=0.36,
+            color=(82, 211, 255) if failure_flags else (90, 225, 190),
+        )
+
     panel_width = min(360, max(250, width // 3))
-    panel_top = header_height + 6
+    panel_top = header_height + diagnostics_height + 6
     panel_bottom = min(height - 8, panel_top + 163)
     if panel_bottom <= panel_top + 30:
         return
@@ -608,8 +736,9 @@ def run(args: argparse.Namespace) -> int:
         return calibrate(source, args.save_zones)
 
     layout = load_zone_layout(args.zones)
+    camera_quality_status = load_camera_quality_status(args.camera_quality_report)
     device, device_label = resolve_device(args.device)
-    detector = UltralyticsDetector(
+    base_detector = UltralyticsDetector(
         args.model,
         args.confidence,
         args.imgsz,
@@ -617,7 +746,16 @@ def run(args: argparse.Namespace) -> int:
         device_label=device_label,
         detector_floor=args.detector_floor,
     )
+    detector = PreprocessingDetector(base_detector, args.preprocessing_profile)
     tracker = ByteTrackAdapter(args.tracker, device_label=device_label)
+    diagnostics = ShowcaseDiagnostics(
+        model_name=args.model,
+        image_size=args.imgsz,
+        detector_floor=args.detector_floor,
+        tracker_profile=args.tracker,
+        preprocessing_profile=args.preprocessing_profile,
+        camera_quality_status=camera_quality_status,
+    )
     confidence_contract = tracker.confidence_contract(args.detector_floor)
     if warning := confidence_contract.get("warning"):
         LOGGER.warning("%s", warning)
@@ -638,6 +776,7 @@ def run(args: argparse.Namespace) -> int:
     processed = 0
     fps_samples: deque[float] = deque(maxlen=30)
     last_frame: np.ndarray | None = None
+    zero_detection_streak = 0
 
     if not args.headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -668,6 +807,13 @@ def run(args: argparse.Namespace) -> int:
                     continue
                 started = time.perf_counter()
                 detections = detector.detect(frame, source_view="full")
+                zero_detection_streak = 0 if detections else zero_detection_streak + 1
+                failure_flags = runtime_failure_flags(
+                    detections,
+                    frame.shape,
+                    operational_confidence=args.confidence,
+                    zero_detection_streak=zero_detection_streak,
+                )
                 tracks = tracker.update(detections, frame)
                 counter.expire(frame_number)
                 track_zones: dict[int, Zone] = {}
@@ -730,6 +876,8 @@ def run(args: argparse.Namespace) -> int:
                         events=events,
                         queue_count=api.queued_count,
                         frame_number=frame_number,
+                        diagnostics=diagnostics,
+                        failure_flags=failure_flags,
                     )
                 last_frame = display_frame
                 processed += 1

@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
+from trackbus.benchmark_detection import build_parser
 from trackbus.benchmark_detection import main as benchmark_main
 from trackbus.detection import Detection
 from trackbus.detection_benchmark import (
@@ -18,6 +19,7 @@ from trackbus.detection_benchmark import (
     write_benchmark_json,
     write_frame_metrics_csv,
 )
+from trackbus.preprocessing import PreprocessingDetector
 
 
 class SequenceDetector:
@@ -247,6 +249,43 @@ def test_benchmark_artifacts_are_machine_readable(tmp_path: Path) -> None:
         rows = list(csv.DictReader(handle))
     assert rows[0]["frame"] == "0"
     assert rows[0]["detections"] == "1"
+
+
+def test_benchmark_records_preprocessing_profile_and_overhead(tmp_path: Path) -> None:
+    video = write_video(tmp_path, frame_count=2)
+    detector = PreprocessingDetector(
+        SequenceDetector(
+            [
+                [detection((2, 2, 10, 12))],
+                [detection((3, 2, 11, 12))],
+            ]
+        ),
+        "contrast",
+    )
+
+    result = benchmark_detector(
+        video_path=video,
+        detector=detector,
+        model_name="fake.pt",
+        image_size=640,
+        confidence_threshold=0.1,
+        device_label="cpu",
+    )
+
+    preprocessing = result.summary["configuration"]["preprocessing"]
+    assert preprocessing["profile"] == "contrast"
+    assert preprocessing["enabled"] is True
+    assert preprocessing["calls"] == 2
+    assert result.summary["configuration"]["detector_floor"] == 0.1
+    assert result.summary["performance"]["inference_latency_includes_preprocessing"]
+    assert all(frame.preprocessing_latency_ms >= 0 for frame in result.frames)
+
+
+def test_benchmark_cli_accepts_detector_floor_and_defaults_preprocessing_off() -> None:
+    args = build_parser().parse_args(["--video", "bus.mp4", "--detector-floor", "0.10"])
+
+    assert args.detector_floor == 0.10
+    assert args.preprocessing_profile == "none"
 
 
 def test_cli_refuses_to_overwrite_the_input_video_before_loading_a_model(

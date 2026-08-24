@@ -16,6 +16,7 @@ from trackbus.detection_benchmark import (
     write_frame_metrics_csv,
 )
 from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
+from trackbus.preprocessing import PreprocessingDetector, PreprocessingProfile
 
 LOGGER = logging.getLogger("trackbus.detection_benchmark")
 
@@ -66,7 +67,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", required=True, type=Path, help="Local input video")
     parser.add_argument("--model", default="yolo11n.pt", help="YOLO weights")
     parser.add_argument("--imgsz", type=_image_size, default=640)
-    parser.add_argument("--conf", type=_probability, default=0.25)
+    parser.add_argument(
+        "--conf",
+        "--detector-floor",
+        dest="detector_floor",
+        type=_probability,
+        default=0.25,
+        help="Lowest YOLO confidence retained in this detector-only run",
+    )
+    parser.add_argument(
+        "--preprocessing-profile",
+        choices=tuple(profile.value for profile in PreprocessingProfile),
+        default=PreprocessingProfile.NONE.value,
+        help="Experimental same-size preprocessing; disabled by default",
+    )
     parser.add_argument(
         "--device", default="auto", help="auto, cpu, cuda, cuda:N, or GPU index"
     )
@@ -118,26 +132,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         )
         LOGGER.info(
-            "Detector-only run: model=%s imgsz=%d conf=%.3f device=%s",
+            "Detector-only run: model=%s imgsz=%d floor=%.3f "
+            "preprocessing=%s device=%s",
             args.model,
             args.imgsz,
-            args.conf,
+            args.detector_floor,
+            args.preprocessing_profile,
             device_label,
         )
-        detector = UltralyticsDetector(
+        base_detector = UltralyticsDetector(
             args.model,
-            args.conf,
+            args.detector_floor,
             args.imgsz,
             device=device,
             device_label=device_label,
             precision=args.precision,
+        )
+        detector = PreprocessingDetector(
+            base_detector,
+            args.preprocessing_profile,
         )
         result = benchmark_detector(
             video_path=args.video,
             detector=detector,
             model_name=args.model,
             image_size=args.imgsz,
-            confidence_threshold=args.conf,
+            confidence_threshold=args.detector_floor,
             device_label=device_label,
             requested_precision=args.precision,
             effective_precision=detector.precision,

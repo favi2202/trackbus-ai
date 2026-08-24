@@ -1,0 +1,21 @@
+# Reproducible starting point for a future reviewed TrackBus dataset.
+# This file does not claim that training has happened or accuracy has improved.
+task: detect
+mode: train
+model: yolo11n.pt
+data: configs/training/trackbus_overhead_dataset.yaml
+epochs: 100
+patience: 20
+imgsz: 960
+batch: 8
+device: 0
+workers: 4
+pretrained: true
+cache: false
+seed: 2202
+deterministic: true
+amp: true
+plots: true
+project: data/output/training
+name: yolo11n-overhead-baseline
+exist_ok: false

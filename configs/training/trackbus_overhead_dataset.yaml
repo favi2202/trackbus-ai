@@ -1,0 +1,9 @@
+# Future local dataset only. Do not commit images, labels, or passenger frames.
+path: datasets/trackbus-overhead
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: person_full
+  1: person_upper_body

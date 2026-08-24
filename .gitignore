@@ -54,5 +54,6 @@ data/experiments/*
 data/ground_truth/*
 !data/ground_truth/.gitkeep
 data/offline-queue/
+/datasets/
 showcase-*.png
 showcase-events-*.csv

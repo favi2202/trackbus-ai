@@ -3,14 +3,19 @@ from datetime import UTC, datetime
 
 import cv2
 import numpy as np
+import pytest
 
 from showcase import (
     RuntimeState,
+    ShowcaseDiagnostics,
     _draw_panel,
     _event_row,
     _prepare_display_frame,
     build_parser,
+    load_camera_quality_status,
+    runtime_failure_flags,
 )
+from trackbus.detection import Detection
 from trackbus.event_contract import vision_event
 
 
@@ -156,8 +161,97 @@ def test_headless_source_keeps_original_resolution() -> None:
 
 def test_showcase_exposes_a_separate_detector_floor() -> None:
     args = build_parser().parse_args(
-        ["--video", "bus.mp4", "--confidence", "0.35", "--detector-floor", "0.10"]
+        [
+            "--video",
+            "bus.mp4",
+            "--confidence",
+            "0.35",
+            "--detector-floor",
+            "0.10",
+            "--preprocessing-profile",
+            "low_light",
+        ]
     )
 
     assert args.confidence == 0.35
     assert args.detector_floor == 0.10
+    assert args.preprocessing_profile == "low_light"
+
+
+@pytest.mark.parametrize("shape", [(720, 1280), (1080, 1920)])
+def test_diagnostic_ribbon_fits_720p_and_1080p_without_overlap(
+    monkeypatch, shape: tuple[int, int]
+) -> None:
+    calls: list[tuple[str, tuple[int, int], float, int]] = []
+    original = cv2.putText
+
+    def record(frame, text, origin, font, scale, color, thickness, *args):
+        calls.append((text, origin, scale, thickness))
+        return original(frame, text, origin, font, scale, color, thickness, *args)
+
+    monkeypatch.setattr(cv2, "putText", record)
+    frame = np.zeros((*shape, 3), dtype=np.uint8)
+    _draw_panel(
+        frame,
+        RuntimeState(occupancy=12, api_status="API ONLINE"),
+        fps=29.8,
+        active_tracks=7,
+        events=deque(),
+        queue_count=2,
+        frame_number=1,
+        diagnostics=ShowcaseDiagnostics(
+            model_name="models/yolo11s.pt",
+            image_size=960,
+            detector_floor=0.1,
+            tracker_profile="configs/tracking_occlusion.yaml",
+            preprocessing_profile="low_light",
+            camera_quality_status="MARGINAL",
+        ),
+        failure_flags=("LOW CONF", "OVERLAP"),
+    )
+
+    ribbon = [
+        call
+        for call in calls
+        if call[0].startswith("MODEL ") or call[0].startswith("CAMERA ")
+    ]
+    assert len(ribbon) == 2
+    bounds = [_bounds(call) for call in ribbon]
+    assert all(0 <= left < right <= shape[1] for left, _, right, _ in bounds)
+    assert not _overlaps(bounds[0], bounds[1])
+    assert "TRACKER tracking_occlusion.yaml" in ribbon[0][0]
+    assert "FLAGS LOW CONF+OVERLAP" in ribbon[1][0]
+
+
+def test_camera_quality_status_requires_diagnostics_contract(tmp_path) -> None:
+    report = tmp_path / "camera.json"
+    report.write_text(
+        '{"status":"GOOD","diagnostic_not_accuracy":true}',
+        encoding="utf-8",
+    )
+    assert load_camera_quality_status(report) == "GOOD"
+    assert load_camera_quality_status(None) == "NOT CHECKED"
+
+    report.write_text('{"status":"GOOD"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="diagnostic_not_accuracy"):
+        load_camera_quality_status(report)
+
+
+def test_runtime_failure_flags_are_concise_diagnostics() -> None:
+    detections = [
+        Detection((0, 0, 100, 100), 0.20, 0, "full"),
+        Detection((10, 10, 95, 95), 0.80, 0, "full"),
+    ]
+
+    assert runtime_failure_flags(
+        detections,
+        (240, 320, 3),
+        operational_confidence=0.35,
+        zero_detection_streak=0,
+    ) == ("LOW CONF", "EDGE CLIP", "OVERLAP")
+    assert runtime_failure_flags(
+        (),
+        (240, 320, 3),
+        operational_confidence=0.35,
+        zero_detection_streak=5,
+    ) == ("DETECTION GAP",)

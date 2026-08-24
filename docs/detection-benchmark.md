@@ -17,7 +17,7 @@ python -m trackbus.benchmark_detection `
   --video test_video.mp4 `
   --model yolo11s.pt `
   --imgsz 960 `
-  --conf 0.20 `
+  --detector-floor 0.10 `
   --device auto `
   --output data/experiments/detector-small-960.json
 ```
@@ -84,7 +84,7 @@ python -m trackbus.benchmark_detection `
   --video test_video.mp4 `
   --model yolo11s.pt `
   --imgsz 960 `
-  --conf 0.20 `
+  --detector-floor 0.10 `
   --ground-truth data/ground_truth/test_video.detections.json `
   --ground-truth-iou 0.50
 ```
@@ -112,8 +112,13 @@ and `leaderboard.csv`. A matrix is limited to at most 24 explicit runs, and may
 set a smaller `maximum_runs` guard.
 
 On CPU, start with nano and small at 640. On an RTX-class CUDA setup, keep the
-960 and medium comparisons. `device: auto` uses CUDA only when the installed
+960 and 1280 small-model comparisons. `device: auto` uses CUDA only when the installed
 PyTorch build can access it and remains CPU-compatible.
+
+The matrix may opt into `preprocessing_profile: low_light` or `contrast` for a
+specific run. Both preserve the source dimensions and report their measured
+latency. They are experiments, disabled by default, and must be compared on the
+same independently labeled frames; an attractive image is not accuracy evidence.
 
 ## Interpreting results
 

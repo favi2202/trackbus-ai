@@ -117,7 +117,7 @@ python -m trackbus.benchmark_detection `
   --video test_video.mp4 `
   --model yolo11s.pt `
   --imgsz 960 `
-  --conf 0.20
+  --detector-floor 0.10
 
 python -m trackbus.sweep_detection `
   --video test_video.mp4 `
@@ -129,7 +129,23 @@ Without box-level person annotations these commands report detection coverage,
 confidence, zero-detection gaps, edge clipping, stability proxies, FPS, and
 latency—but deliberately do not claim precision, recall, F1, or a best accuracy
 configuration. See the [detector benchmark guide](docs/detection-benchmark.md)
-and [failure audit](docs/vision-failure-audit.md).
+and [failure audit](docs/vision-failure-audit.md). Optional `low_light` and
+`contrast` preprocessing profiles are bounded, same-size experiments and stay
+off by default.
+
+Combine completed detector, pipeline, and event-evaluation artifacts without
+mixing metric meanings:
+
+```powershell
+python -m trackbus.benchmark_report `
+  --detection data/experiments/detector/benchmark.json `
+  --processing data/output/processing-summary.json `
+  --counting data/output/counting-evaluation.json `
+  --output data/experiments/separated-report.json
+```
+
+The JSON and CSV outputs label every non-ground-truth section as diagnostics,
+not accuracy. See the [separated benchmark guide](docs/separated-benchmark.md).
 
 After establishing a detector baseline, compare the bounded ByteTrack profiles
 in `configs/tracking_fast.yaml`, `configs/tracking_balanced.yaml`, and
@@ -171,4 +187,6 @@ python showcase.py --help
 
 See [the showcase guide](docs/showcase.md), [architecture](docs/architecture.md),
 [privacy boundaries](docs/privacy-and-safety.md), and
-[pilot runbook](docs/pilot-runbook.md) before field use.
+[pilot runbook](docs/pilot-runbook.md) before field use. For a future local
+training dataset, begin with the privacy-conscious
+[dataset preparation workflow](docs/dataset-preparation.md).

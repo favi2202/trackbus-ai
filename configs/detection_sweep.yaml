@@ -9,33 +9,51 @@ stability_iou_threshold: 0.10
 edge_margin_pixels: 2
 
 runs:
-  - name: nano-640-conf-020
+  - name: nano-640-floor-010
     model: yolo11n.pt
     image_size: 640
-    confidence: 0.20
+    detector_floor: 0.10
+    preprocessing_profile: none
 
-  - name: nano-960-conf-020
+  - name: nano-960-floor-010
     model: yolo11n.pt
     image_size: 960
-    confidence: 0.20
+    detector_floor: 0.10
+    preprocessing_profile: none
 
-  - name: small-640-conf-020
+  - name: small-640-floor-010
     model: yolo11s.pt
     image_size: 640
-    confidence: 0.20
+    detector_floor: 0.10
+    preprocessing_profile: none
 
-  - name: small-960-conf-015
+  - name: small-960-floor-010
     model: yolo11s.pt
     image_size: 960
-    confidence: 0.15
+    detector_floor: 0.10
+    preprocessing_profile: none
 
-  - name: small-960-conf-025
+  - name: small-1280-floor-010
+    model: yolo11s.pt
+    image_size: 1280
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: small-960-floor-005
     model: yolo11s.pt
     image_size: 960
-    confidence: 0.25
+    detector_floor: 0.05
+    preprocessing_profile: none
 
-  # This is the expensive comparison. Keep it only when GPU time is available.
-  - name: medium-960-conf-020
-    model: yolo11m.pt
+  - name: small-960-floor-015
+    model: yolo11s.pt
     image_size: 960
-    confidence: 0.20
+    detector_floor: 0.15
+    preprocessing_profile: none
+
+  # Opt-in preprocessing comparison. Keep it only for genuinely dark footage.
+  - name: small-960-floor-010-low-light
+    model: yolo11s.pt
+    image_size: 960
+    detector_floor: 0.10
+    preprocessing_profile: low_light

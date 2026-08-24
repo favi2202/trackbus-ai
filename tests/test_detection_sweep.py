@@ -71,8 +71,9 @@ def test_explicit_sweep_runs_are_loaded_without_hidden_cartesian_product(
                     "name": "small 960",
                     "model": "yolo11s.pt",
                     "image_size": 960,
-                    "confidence": 0.15,
+                    "detector_floor": 0.15,
                     "precision": "fp16",
+                    "preprocessing_profile": "low_light",
                 },
             ],
         )
@@ -80,6 +81,8 @@ def test_explicit_sweep_runs_are_loaded_without_hidden_cartesian_product(
 
     assert [run.name for run in matrix.runs] == ["nano 640", "small 960"]
     assert matrix.runs[1].precision == "fp16"
+    assert matrix.runs[1].detector_floor == 0.15
+    assert matrix.runs[1].preprocessing_profile == "low_light"
     assert matrix.device == "cpu"
 
 
@@ -131,6 +134,7 @@ def test_sweep_writes_per_run_evidence_and_proxy_only_leaderboard(
                     "model": "yolo11s.pt",
                     "image_size": 960,
                     "confidence": 0.15,
+                    "preprocessing_profile": "contrast",
                 },
             ],
         )
@@ -159,3 +163,5 @@ def test_sweep_writes_per_run_evidence_and_proxy_only_leaderboard(
         rows = list(csv.DictReader(handle))
     assert rows[0]["recall"] == ""
     assert rows[0]["metric_status"] == "proxy_only_no_box_ground_truth"
+    assert rows[1]["preprocessing_profile"] == "contrast"
+    assert float(rows[1]["mean_preprocessing_latency_ms"]) >= 0

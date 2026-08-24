@@ -23,6 +23,24 @@ python showcase.py --calibrate --camera 0 --save-zones configs/showcase_zones.ya
 python showcase.py --video door.mp4 --zones configs/showcase_zones.yaml --api-url http://localhost:8000
 ```
 
+Generate camera evidence before a presentation, then show its diagnostics-only
+status in the live ribbon:
+
+```powershell
+python -m trackbus.camera_quality `
+  --source ".\videos\door.mp4" `
+  --config ".\configs\default.yaml" `
+  --output ".\data\output\door.camera-quality.json"
+
+python showcase.py `
+  --video ".\videos\door.mp4" `
+  --camera-quality-report ".\data\output\door.camera-quality.json"
+```
+
+Without a report the overlay honestly says `CAMERA NOT CHECKED`. A supplied
+report must declare `diagnostic_not_accuracy: true`; `GOOD`, `MARGINAL`, and
+`UNSUITABLE` describe camera suitability heuristics, not recognition accuracy.
+
 To connect a Windows camera directly to the hosted Live pilot dashboard:
 
 ```powershell
@@ -36,11 +54,20 @@ and appears in the dashboard within about two seconds. Inspect the raw records a
 keep it out of source files and prefer the environment variable to `--api-key`.
 
 Use `--model`, `--imgsz`, `--confidence`, `--detector-floor`, `--device`,
-`--frame-skip`, and `--tracker` to match the edge hardware. The detector floor
+`--frame-skip`, `--tracker`, and `--preprocessing-profile` to match the edge
+hardware. The `none` profile is the default. The opt-in `low_light` and
+`contrast` profiles preserve frame dimensions and expose their latency in the
+detector benchmark; neither creates image detail or proves an accuracy gain.
+The detector floor
 defaults to `0.10`; weak detections may maintain an existing anonymous track but
 cannot start one. CUDA requires a CUDA-enabled PyTorch install; use `--device
 cpu` when it is unavailable. Ultralytics `8.4.95` and `lap` are declared
 dependencies because the ByteTrack adapter is version-tested.
+
+The overlay shows the effective model, image size, detector floor, tracker
+profile, preprocessing profile, active anonymous tracks, measured FPS, camera
+status, API queue, and concise frame-local warnings. `DETECTION GAP`, `LOW CONF`,
+`EDGE CLIP`, and `OVERLAP` are troubleshooting flags, not accuracy results.
 
 ## Controls
 

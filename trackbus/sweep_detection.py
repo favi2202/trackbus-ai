@@ -25,6 +25,11 @@ from trackbus.detection_benchmark import (
 )
 from trackbus.detector import DetectorError, UltralyticsDetector, resolve_device
 from trackbus.interfaces import DetectorBackend
+from trackbus.preprocessing import (
+    PreprocessingDetector,
+    PreprocessingProfile,
+    parse_preprocessing_profile,
+)
 
 LOGGER = logging.getLogger("trackbus.detection_sweep")
 DEFAULT_MAXIMUM_RUNS = 24
@@ -42,6 +47,11 @@ class DetectionSweepRun:
     confidence: float
     precision: str = "fp32"
     maximum_frames: int | None = None
+    preprocessing_profile: str = PreprocessingProfile.NONE.value
+
+    @property
+    def detector_floor(self) -> float:
+        return self.confidence
 
     @property
     def slug(self) -> str:
@@ -157,23 +167,33 @@ def run_detection_sweep(
         summary_path = run_dir / "benchmark.json"
         frames_path = run_dir / "frames.csv"
         LOGGER.info(
-            "Running %s: model=%s imgsz=%d conf=%.3f",
+            "Running %s: model=%s imgsz=%d floor=%.3f preprocessing=%s",
             run.name,
             run.model,
             run.image_size,
-            run.confidence,
+            run.detector_floor,
+            run.preprocessing_profile,
         )
         try:
-            detector = factory(run, device, device_label)
+            base_detector = factory(run, device, device_label)
+            effective_precision = getattr(
+                base_detector,
+                "precision",
+                run.precision,
+            )
+            detector = PreprocessingDetector(
+                base_detector,
+                run.preprocessing_profile,
+            )
             result = benchmark_detector(
                 video_path=video_path,
                 detector=detector,
                 model_name=run.model,
                 image_size=run.image_size,
-                confidence_threshold=run.confidence,
+                confidence_threshold=run.detector_floor,
                 device_label=device_label,
                 requested_precision=run.precision,
-                effective_precision=getattr(detector, "precision", run.precision),
+                effective_precision=str(effective_precision),
                 ground_truth=ground_truth,
                 low_confidence_threshold=matrix.low_confidence_threshold,
                 matching_iou_threshold=matrix.ground_truth_iou_threshold,
@@ -193,6 +213,8 @@ def run_detection_sweep(
                 "model": run.model,
                 "image_size": run.image_size,
                 "confidence": run.confidence,
+                "detector_floor": run.detector_floor,
+                "preprocessing_profile": run.preprocessing_profile,
                 "requested_precision": run.precision,
                 "effective_precision": None,
                 "error": str(exc),
@@ -222,6 +244,8 @@ def _completed_run(
         "model": run.model,
         "image_size": run.image_size,
         "confidence": run.confidence,
+        "detector_floor": run.detector_floor,
+        "preprocessing_profile": run.preprocessing_profile,
         "requested_precision": summary["configuration"]["requested_precision"],
         "effective_precision": summary["configuration"]["effective_precision"],
         "processed_frames": summary["video"]["processed_frame_count"],
@@ -233,6 +257,9 @@ def _completed_run(
         "stability_match_rate": stability["match_rate"],
         "pipeline_fps": performance["pipeline_fps_including_decode"],
         "mean_inference_latency_ms": performance["inference_latency_ms"]["mean"],
+        "mean_preprocessing_latency_ms": performance["preprocessing_latency_ms"][
+            "mean"
+        ],
         "precision_score": truth.get("precision") if truth else None,
         "recall": truth.get("recall") if truth else None,
         "f1": truth.get("f1") if truth else None,
@@ -277,6 +304,8 @@ def _sweep_csv_fields() -> list[str]:
         "model",
         "image_size",
         "confidence",
+        "detector_floor",
+        "preprocessing_profile",
         "requested_precision",
         "effective_precision",
         "processed_frames",
@@ -286,6 +315,7 @@ def _sweep_csv_fields() -> list[str]:
         "stability_match_rate",
         "pipeline_fps",
         "mean_inference_latency_ms",
+        "mean_preprocessing_latency_ms",
         "precision_score",
         "recall",
         "f1",
@@ -317,8 +347,21 @@ def _parse_run(value: object, index: int) -> DetectionSweepRun:
     _reject_unknown(
         value,
         name,
-        {"name", "model", "image_size", "confidence", "precision", "maximum_frames"},
+        {
+            "name",
+            "model",
+            "image_size",
+            "confidence",
+            "detector_floor",
+            "precision",
+            "maximum_frames",
+            "preprocessing_profile",
+        },
     )
+    if "confidence" in value and "detector_floor" in value:
+        raise DetectionSweepError(
+            f"{name} cannot define both confidence and detector_floor."
+        )
     run_name = value.get("name")
     model = value.get("model")
     if not isinstance(run_name, str) or not run_name.strip():
@@ -330,6 +373,12 @@ def _parse_run(value: object, index: int) -> DetectionSweepRun:
     precision = value.get("precision", "fp32")
     if precision not in {"fp32", "fp16"}:
         raise DetectionSweepError(f"{name}.precision must be fp32 or fp16.")
+    try:
+        preprocessing = parse_preprocessing_profile(
+            str(value.get("preprocessing_profile", PreprocessingProfile.NONE.value))
+        )
+    except ValueError as exc:
+        raise DetectionSweepError(f"{name}.{exc}") from exc
     maximum_frames_value = value.get("maximum_frames")
     maximum_frames = (
         _positive_int(maximum_frames_value, f"{name}.maximum_frames")
@@ -343,9 +392,13 @@ def _parse_run(value: object, index: int) -> DetectionSweepRun:
         name=run_name.strip(),
         model=model.strip(),
         image_size=image_size,
-        confidence=_probability(value.get("confidence"), f"{name}.confidence"),
+        confidence=_probability(
+            value.get("detector_floor", value.get("confidence")),
+            f"{name}.detector_floor",
+        ),
         precision=precision,
         maximum_frames=maximum_frames,
+        preprocessing_profile=preprocessing.value,
     )
 
 

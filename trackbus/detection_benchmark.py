@@ -21,6 +21,7 @@ import cv2
 
 from trackbus.detection import BoundingBox, Detection
 from trackbus.interfaces import DetectorBackend
+from trackbus.preprocessing import preprocessing_latency_ms, preprocessing_summary
 
 
 class DetectionBenchmarkError(ValueError):
@@ -83,6 +84,7 @@ class FrameDetectionMetrics:
     low_confidence_detections: int
     edge_clipped_detections: int
     inference_latency_ms: float
+    preprocessing_latency_ms: float
     previous_frame_matches: int
     previous_frame_mean_iou: float | None
     ground_truth_persons: int | None = None
@@ -101,6 +103,7 @@ class FrameDetectionMetrics:
             "low_confidence_detections": self.low_confidence_detections,
             "edge_clipped_detections": self.edge_clipped_detections,
             "inference_latency_ms": round(self.inference_latency_ms, 4),
+            "preprocessing_latency_ms": round(self.preprocessing_latency_ms, 4),
             "previous_frame_matches": self.previous_frame_matches,
             "previous_frame_mean_iou": _rounded(self.previous_frame_mean_iou),
             "ground_truth_persons": self.ground_truth_persons,
@@ -238,6 +241,7 @@ def benchmark_detector(
 
     frames: list[FrameDetectionMetrics] = []
     latencies: list[float] = []
+    preprocessing_latencies: list[float] = []
     confidences: list[float] = []
     previous_detections: tuple[Detection, ...] = ()
     started = time.perf_counter()
@@ -250,10 +254,12 @@ def benchmark_detector(
             inference_started = time.perf_counter()
             detections = tuple(detector.detect(frame, source_view="full"))
             latency_ms = (time.perf_counter() - inference_started) * 1000.0
+            preprocessing_ms = preprocessing_latency_ms(detector)
             _validate_detector_output(detections)
             frame_confidences = [detection.confidence for detection in detections]
             confidences.extend(frame_confidences)
             latencies.append(latency_ms)
+            preprocessing_latencies.append(preprocessing_ms)
             previous_pairs = maximum_iou_matching(
                 [detection.bounding_box for detection in previous_detections],
                 [detection.bounding_box for detection in detections],
@@ -306,6 +312,7 @@ def benchmark_detector(
                         for detection in detections
                     ),
                     inference_latency_ms=latency_ms,
+                    preprocessing_latency_ms=preprocessing_ms,
                     previous_frame_matches=len(previous_pairs),
                     previous_frame_mean_iou=(
                         statistics.fmean(pair[2] for pair in previous_pairs)
@@ -347,6 +354,8 @@ def benchmark_detector(
         elapsed=elapsed,
         confidences=confidences,
         latencies=latencies,
+        preprocessing_latencies=preprocessing_latencies,
+        preprocessing=preprocessing_summary(detector),
         frames=frames,
         ground_truth=ground_truth,
     )
@@ -459,6 +468,8 @@ def _build_summary(
     elapsed: float,
     confidences: Sequence[float],
     latencies: Sequence[float],
+    preprocessing_latencies: Sequence[float],
+    preprocessing: Mapping[str, Any],
     frames: Sequence[FrameDetectionMetrics],
     ground_truth: DetectionGroundTruth | None,
 ) -> dict[str, Any]:
@@ -499,12 +510,14 @@ def _build_summary(
             "model": model_name,
             "image_size": image_size,
             "confidence_threshold": confidence_threshold,
+            "detector_floor": confidence_threshold,
             "requested_precision": requested_precision,
             "effective_precision": effective_precision,
             "low_confidence_threshold": low_confidence_threshold,
             "device": device_label,
             "ground_truth_iou_threshold": matching_iou_threshold,
             "stability_iou_threshold": stability_iou_threshold,
+            "preprocessing": dict(preprocessing),
         },
         "detections": {
             "total": detection_count,
@@ -542,6 +555,8 @@ def _build_summary(
             if elapsed
             else None,
             "inference_latency_ms": _distribution(latencies),
+            "preprocessing_latency_ms": _distribution(preprocessing_latencies),
+            "inference_latency_includes_preprocessing": True,
             "detector_fps_from_mean_latency": (
                 round(1000.0 / statistics.fmean(latencies), 6)
                 if latencies and statistics.fmean(latencies) > 0
