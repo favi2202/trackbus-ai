@@ -2,15 +2,19 @@
 
 `showcase.py` is an executable demonstration of the real edge pipeline, not a
 pre-rendered or fake-detection overlay. It calls Ultralytics person detection,
-advances one ByteTrack instance, assigns temporary IDs, classifies a configurable
-anchor in three polygons, and emits an event only for a stable full path.
+advances one ByteTrack instance, assigns temporary IDs, reconnects short ID
+fragments with bounded geometry-based lock-on, and evaluates both the top and
+bottom box anchors in three polygons. Both anchors share one event latch, so one
+physical journey can emit at most one event during the cooldown.
 
 ```text
 OUTSIDE -> DOOR -> INSIDE = IN / BOARDING / +1
 INSIDE  -> DOOR -> OUTSIDE = OUT / ALIGHTING / -1
 ```
 
-Incomplete, direct, noisy, expired, and reversed paths do not count.
+Incomplete, noisy, expired, and reversed paths do not count. A direct jump can
+count only when its two real observations geometrically cross the DOOR polygon;
+visual lock-on predictions never enter the counter or API.
 
 ## Commands
 
@@ -22,6 +26,28 @@ python showcase.py --demo
 python showcase.py --calibrate --camera 0 --save-zones configs/showcase_zones.yaml
 python showcase.py --video door.mp4 --zones configs/showcase_zones.yaml --api-url http://localhost:8000
 ```
+
+The default lock-on remembers a lost stable ID for at most 12 processed frames.
+The overlay renders a decaying `LOCK Nf` box during that bounded gap. Tune only
+after replaying labeled footage:
+
+```powershell
+.\.venv\Scripts\python.exe showcase.py `
+  --video ".\data\input\bus-test-1.mp4" `
+  --zones ".\configs\bus-test-1-zones.yaml" `
+  --tracker ".\configs\tracking_occlusion.yaml" `
+  --model "yolo11s.pt" `
+  --imgsz 960 `
+  --detector-floor 0.05 `
+  --lock-on-gap-frames 12 `
+  --lock-on-distance 0.12 `
+  --event-cooldown-frames 45 `
+  --device cuda
+```
+
+`--lock-on-gap-frames` is bounded to 1-30. Increasing it or
+`--lock-on-distance` can reconnect longer dropouts, but also raises the risk of
+joining two nearby people; change one value at a time against ground truth.
 
 Generate camera evidence before a presentation, then show its diagnostics-only
 status in the live ribbon:
@@ -65,9 +91,10 @@ cpu` when it is unavailable. Ultralytics `8.4.95` and `lap` are declared
 dependencies because the ByteTrack adapter is version-tested.
 
 The overlay shows the effective model, image size, detector floor, tracker
-profile, preprocessing profile, active anonymous tracks, measured FPS, camera
-status, API queue, and concise frame-local warnings. `DETECTION GAP`, `LOW CONF`,
-`EDGE CLIP`, and `OVERLAP` are troubleshooting flags, not accuracy results.
+profile, preprocessing profile, lock-on window, active/locked anonymous tracks,
+both zone anchors, measured FPS, camera status, API queue, and concise frame-local
+warnings. `DETECTION GAP`, `LOW CONF`, `EDGE CLIP`, and `OVERLAP` are
+troubleshooting flags, not accuracy results.
 
 ## Controls
 

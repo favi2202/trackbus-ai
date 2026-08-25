@@ -86,7 +86,10 @@ On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
 
 Useful overrides include `--model`, `--confidence`, `--detector-floor`, `--imgsz`,
 `--device`, `--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`,
-`--bus-id`, `--route-id`, `--stop-id`, and `--door-id`. Prefer the
+`--lock-on-gap-frames`, `--lock-on-distance`, `--event-cooldown-frames`,
+`--bus-id`, `--route-id`, `--stop-id`, and `--door-id`. Lock-on reconnects short
+anonymous-ID fragments and displays bounded visual predictions, but only real
+detections can confirm a crossing. Prefer the
 `TRACKBUS_API_KEY` environment variable over `--api-key` so the key does not
 appear in shell history. The default zones are a safe presentation
 starting point; a real camera must be calibrated for its doorway geometry.

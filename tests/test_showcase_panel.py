@@ -176,6 +176,11 @@ def test_showcase_exposes_a_separate_detector_floor() -> None:
     assert args.confidence == 0.35
     assert args.detector_floor == 0.10
     assert args.preprocessing_profile == "low_light"
+    assert args.lock_on_gap_frames == 12
+    assert args.lock_on_distance == pytest.approx(0.12)
+    assert args.lock_on_minimum_iou == pytest.approx(0.02)
+    assert args.lock_on_match_score == pytest.approx(0.50)
+    assert args.event_cooldown_frames == 45
 
 
 @pytest.mark.parametrize("shape", [(720, 1280), (1080, 1920)])

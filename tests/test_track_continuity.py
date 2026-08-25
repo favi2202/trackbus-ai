@@ -100,6 +100,67 @@ def test_new_raw_id_is_stitched_after_short_consistent_gap() -> None:
     assert adapter.continuity_summary["maximum_stitched_gap_frames"] == 2
 
 
+def test_short_dropout_exposes_visual_only_motion_prediction() -> None:
+    wrapped = SequenceTracker(
+        [
+            [person(4, (10, 10, 30, 50))],
+            [person(4, (14, 10, 34, 50))],
+            [],
+        ]
+    )
+    adapter = TrackContinuityAdapter(wrapped, max_gap_frames=3)  # type: ignore[arg-type]
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    assert adapter.update([], image)
+    assert adapter.update([], image)
+    assert adapter.update([], image) == []
+    prediction = adapter.predicted_tracks(image.shape)[0]
+
+    assert prediction.tracking_id == 4
+    assert prediction.bounding_box == pytest.approx((18, 10, 38, 50))
+    assert prediction.metadata["prediction_only"] is True
+    assert prediction.metadata["continuity_prediction_age_frames"] == 1
+    assert "track_prediction_only" in prediction.metadata["quality_flags"]
+    assert adapter.continuity_summary["predicted_track_frames"] == 1
+
+
+def test_visual_prediction_expires_and_never_appears_as_tracker_output() -> None:
+    wrapped = SequenceTracker(
+        [[person(4, (10, 10, 30, 50))], [], [], [], []]
+    )
+    adapter = TrackContinuityAdapter(wrapped, max_gap_frames=2)  # type: ignore[arg-type]
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    outputs = []
+    predictions = []
+    for _frame in wrapped.frames:
+        outputs.append(adapter.update([], image))
+        predictions.append(adapter.predicted_tracks(image.shape))
+
+    assert outputs[1:] == [[], [], [], []]
+    assert predictions[1]
+    assert predictions[2]
+    assert predictions[3] == []
+    assert predictions[4] == []
+    assert adapter.continuity_summary["expired_memories"] == 1
+
+
+def test_expired_raw_id_cannot_resurrect_an_old_stable_identity() -> None:
+    _adapter, outputs, _wrapped = run(
+        [
+            [person(4, (10, 10, 30, 50))],
+            [],
+            [],
+            [],
+            [person(4, (12, 10, 32, 50))],
+        ],
+        max_gap_frames=2,
+    )
+
+    assert outputs[0][0].tracking_id == 4
+    assert outputs[4][0].tracking_id != 4
+
+
 def test_fragment_beyond_maximum_gap_becomes_new_stable_track() -> None:
     adapter, outputs, _wrapped = run(
         [

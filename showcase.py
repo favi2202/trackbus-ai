@@ -27,12 +27,16 @@ from trackbus.fusion import box_iou
 from trackbus.preprocessing import PreprocessingDetector, PreprocessingProfile
 from trackbus.showcase_zones import (
     CrossingEvent,
-    CrossingStateMachine,
+    DualAnchorCrossingCounter,
     Zone,
     ZoneLayout,
     load_zone_layout,
 )
-from trackbus.tracker import ByteTrackAdapter, TrackerAdapterError
+from trackbus.tracker import (
+    ByteTrackAdapter,
+    TrackContinuityAdapter,
+    TrackerAdapterError,
+)
 
 LOGGER = logging.getLogger("trackbus.showcase")
 WINDOW = "TrackBus Vision / Edge AI - Live"
@@ -68,6 +72,7 @@ class ShowcaseDiagnostics:
     tracker_profile: str
     preprocessing_profile: str
     camera_quality_status: str
+    lock_on_gap_frames: int = 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,6 +133,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--minimum-zone-frames", type=int, default=2)
     parser.add_argument("--maximum-transition-gap", type=int, default=45)
+    parser.add_argument(
+        "--lock-on-gap-frames",
+        type=int,
+        default=12,
+        help="Maximum short dropout bridged by stable-ID lock-on (1-30)",
+    )
+    parser.add_argument(
+        "--lock-on-distance",
+        type=float,
+        default=0.12,
+        help="Maximum predicted-center distance as a fraction of frame diagonal",
+    )
+    parser.add_argument(
+        "--lock-on-minimum-iou",
+        type=float,
+        default=0.02,
+        help="Minimum predicted/reacquired box IoU outside the close-distance band",
+    )
+    parser.add_argument(
+        "--lock-on-match-score",
+        type=float,
+        default=0.50,
+        help="Minimum combined geometry/motion score for ID reconnection",
+    )
+    parser.add_argument(
+        "--event-cooldown-frames",
+        type=int,
+        default=45,
+        help="Shared top/bottom-anchor latch preventing duplicate journey events",
+    )
     parser.add_argument(
         "--notify-cooldown",
         type=int,
@@ -342,25 +377,39 @@ def _draw_track(
         round(track.bounding_box[2] * scale_x),
         round(track.bounding_box[3] * scale_y),
     )
-    color = ZONE_COLORS.get(zone, (170, 180, 190))
-    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+    prediction_only = bool(track.metadata.get("prediction_only"))
+    color = (140, 165, 180) if prediction_only else ZONE_COLORS.get(
+        zone, (170, 180, 190)
+    )
+    thickness = 1 if prediction_only else 2
+    cv2.rectangle(frame, (left, top), (right, bottom), color, thickness)
+    label = f"T{track.tracking_id} {track.confidence:.2f}"
+    if prediction_only:
+        age = int(track.metadata.get("continuity_prediction_age_frames", 0))
+        label = f"T{track.tracking_id} LOCK {age}f"
     cv2.putText(
         frame,
-        f"T{track.tracking_id} {track.confidence:.2f}",
+        label,
         (left, max(18, top - 6)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.46,
         color,
-        2,
+        thickness,
     )
-    trail.append((round(track.anchor[0]), round(track.anchor[1])))
+    trail.append((round(track.center[0]), round(track.center[1])))
     display_trail = np.asarray(
         [(round(x * scale_x), round(y * scale_y)) for x, y in trail],
         dtype=np.int32,
     )
     if len(trail) > 1:
-        cv2.polylines(frame, [display_trail], False, color, 2)
-    cv2.circle(frame, tuple(display_trail[-1]), 4, color, -1)
+        cv2.polylines(frame, [display_trail], False, color, thickness)
+    cv2.circle(frame, tuple(display_trail[-1]), 3, color, -1)
+    for anchor in (track.top_center, track.anchor):
+        display_anchor = (
+            round(anchor[0] * scale_x),
+            round(anchor[1] * scale_y),
+        )
+        cv2.circle(frame, display_anchor, 4, color, -1)
 
 
 def _prepare_display_frame(
@@ -529,6 +578,7 @@ def _draw_panel(
     frame_number: int,
     diagnostics: ShowcaseDiagnostics | None = None,
     failure_flags: Sequence[str] = (),
+    locked_tracks: int = 0,
 ) -> None:
     height, width = frame.shape[:2]
     padding = 18
@@ -536,7 +586,8 @@ def _draw_panel(
     subtitle = "EDGE AI | LIVE | ANONYMOUS TEMPORARY IDS"
     summary = (
         f"IN {state.boardings}   OUT {state.alightings}   "
-        f"ONBOARD {state.occupancy}   TRACKS {active_tracks}   FPS {fps:.1f}"
+        f"ONBOARD {state.occupancy}   TRACKS {active_tracks}"
+        f"{f' + LOCK {locked_tracks}' if locked_tracks else ''}   FPS {fps:.1f}"
     )
     api_text = f"{state.api_status} | QUEUED {queue_count}"
     left_width = max(_text_width(title, 0.76, 2), _text_width(subtitle, 0.42))
@@ -601,7 +652,8 @@ def _draw_panel(
             f"MODEL {Path(diagnostics.model_name).name} | IMG {diagnostics.image_size} "
             f"| FLOOR {diagnostics.detector_floor:.2f} | "
             f"TRACKER {Path(diagnostics.tracker_profile).name} | "
-            f"PRE {diagnostics.preprocessing_profile}"
+            f"PRE {diagnostics.preprocessing_profile} | "
+            f"LOCK {diagnostics.lock_on_gap_frames}f"
         )
         rendered_flags = "+".join(failure_flags) if failure_flags else "NONE"
         health_text = (
@@ -729,6 +781,16 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("confidence, image size, and frame skip values are invalid")
     if args.capacity <= 0 or not 0 <= args.initial_occupancy <= args.capacity:
         raise ValueError("initial occupancy must fit a positive capacity")
+    if not 1 <= args.lock_on_gap_frames <= 30:
+        raise ValueError("lock-on gap frames must be between 1 and 30")
+    if not 0 < args.lock_on_distance <= 0.5:
+        raise ValueError("lock-on distance must be greater than 0 and at most 0.5")
+    if not 0 <= args.lock_on_minimum_iou <= 1:
+        raise ValueError("lock-on minimum IoU must be between 0 and 1")
+    if not 0 <= args.lock_on_match_score <= 1:
+        raise ValueError("lock-on match score must be between 0 and 1")
+    if args.event_cooldown_frames < 0:
+        raise ValueError("event cooldown frames cannot be negative")
     source = resolve_source(args)
     if args.calibrate:
         if args.headless:
@@ -747,7 +809,16 @@ def run(args: argparse.Namespace) -> int:
         detector_floor=args.detector_floor,
     )
     detector = PreprocessingDetector(base_detector, args.preprocessing_profile)
-    tracker = ByteTrackAdapter(args.tracker, device_label=device_label)
+    base_tracker = ByteTrackAdapter(args.tracker, device_label=device_label)
+    tracker = TrackContinuityAdapter(
+        base_tracker,
+        max_gap_frames=args.lock_on_gap_frames,
+        max_centroid_distance=args.lock_on_distance,
+        minimum_iou=args.lock_on_minimum_iou,
+        maximum_size_ratio=2.0,
+        minimum_direction_cosine=-0.15,
+        minimum_match_score=args.lock_on_match_score,
+    )
     diagnostics = ShowcaseDiagnostics(
         model_name=args.model,
         image_size=args.imgsz,
@@ -755,13 +826,16 @@ def run(args: argparse.Namespace) -> int:
         tracker_profile=args.tracker,
         preprocessing_profile=args.preprocessing_profile,
         camera_quality_status=camera_quality_status,
+        lock_on_gap_frames=args.lock_on_gap_frames,
     )
-    confidence_contract = tracker.confidence_contract(args.detector_floor)
+    confidence_contract = base_tracker.confidence_contract(args.detector_floor)
     if warning := confidence_contract.get("warning"):
         LOGGER.warning("%s", warning)
-    counter = CrossingStateMachine(
+    counter = DualAnchorCrossingCounter(
+        layout,
         minimum_zone_frames=args.minimum_zone_frames,
         maximum_gap_frames=args.maximum_transition_gap,
+        event_cooldown_frames=args.event_cooldown_frames,
     )
     api = TrackBusApiClient(
         args.api_url,
@@ -815,16 +889,20 @@ def run(args: argparse.Namespace) -> int:
                     zero_detection_streak=zero_detection_streak,
                 )
                 tracks = tracker.update(detections, frame)
+                active_ids = {track.tracking_id for track in tracks}
+                locked_tracks = tracker.predicted_tracks(
+                    frame.shape,
+                    exclude_ids=active_ids,
+                )
                 counter.expire(frame_number)
                 track_zones: dict[int, Zone] = {}
                 for track in tracks:
-                    zone = layout.classify(track.anchor, frame.shape)
+                    zone = counter.display_zone(track, frame.shape)
                     track_zones[track.tracking_id] = zone
                     crossing = counter.observe(
-                        track_id=track.tracking_id,
-                        zone=zone,
+                        track=track,
                         frame_number=frame_number,
-                        confidence=track.confidence,
+                        frame_shape=frame.shape,
                     )
                     trails.setdefault(track.tracking_id, deque(maxlen=32))
                     if crossing:
@@ -846,7 +924,13 @@ def run(args: argparse.Namespace) -> int:
                             f"delivered={result.delivered} queued={result.queued}",
                             flush=True,
                         )
-                active = {track.tracking_id for track in tracks}
+                for track in locked_tracks:
+                    track_zones[track.tracking_id] = counter.display_zone(
+                        track, frame.shape
+                    )
+                    trails.setdefault(track.tracking_id, deque(maxlen=32))
+                display_tracks = [*tracks, *locked_tracks]
+                active = {track.tracking_id for track in display_tracks}
                 trails = {
                     track_id: trail
                     for track_id, trail in trails.items()
@@ -859,7 +943,7 @@ def run(args: argparse.Namespace) -> int:
                     frame, expand=not args.headless
                 )
                 if state.overlay:
-                    for track in tracks:
+                    for track in display_tracks:
                         _draw_track(
                             display_frame,
                             track,
@@ -878,6 +962,7 @@ def run(args: argparse.Namespace) -> int:
                         frame_number=frame_number,
                         diagnostics=diagnostics,
                         failure_flags=failure_flags,
+                        locked_tracks=len(locked_tracks),
                     )
                 last_frame = display_frame
                 processed += 1
@@ -926,9 +1011,13 @@ def run(args: argparse.Namespace) -> int:
         capture.release()
         if not args.headless:
             cv2.destroyAllWindows()
+    continuity = tracker.continuity_summary
+    counting = counter.summary
     print(
         f"TrackBus Vision stopped · processed={processed} in={state.boardings} "
-        f"out={state.alightings} occupancy={state.occupancy} queued={api.queued_count}"
+        f"out={state.alightings} occupancy={state.occupancy} queued={api.queued_count} "
+        f"stitched={continuity['stitched_track_fragments']} "
+        f"duplicate_events_suppressed={counting['suppressed_duplicate_events']}"
     )
     return 0
 

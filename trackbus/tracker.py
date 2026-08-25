@@ -91,6 +91,10 @@ class _ContinuityState:
     center: tuple[float, float]
     velocity: tuple[float, float] = (0.0, 0.0)
     observations: int = 1
+    confidence: float = 0.0
+    class_id: int = 0
+    source_views: tuple[str, ...] = ()
+    metadata: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +331,7 @@ class TrackContinuityAdapter:
         self._frame_number = -1
         self._states: dict[int, _ContinuityState] = {}
         self._raw_to_stable: dict[int, int] = {}
+        self._used_stable_ids: set[int] = set()
         self._next_stable_id = 0
         self._stitch_attempts = 0
         self._candidate_pairs_evaluated = 0
@@ -334,6 +339,8 @@ class TrackContinuityAdapter:
         self._new_stable_tracks = 0
         self._expired_memories = 0
         self._maximum_stitched_gap_frames = 0
+        self._predicted_track_frames = 0
+        self._maximum_simultaneous_predictions = 0
 
     @property
     def effective_config(self) -> dict[str, object]:
@@ -365,6 +372,10 @@ class TrackContinuityAdapter:
             "new_stable_tracks": self._new_stable_tracks,
             "expired_memories": self._expired_memories,
             "maximum_stitched_gap_frames": self._maximum_stitched_gap_frames,
+            "predicted_track_frames": self._predicted_track_frames,
+            "maximum_simultaneous_predictions": (
+                self._maximum_simultaneous_predictions
+            ),
             "active_track_memories": len(self._states),
         }
 
@@ -474,6 +485,69 @@ class TrackContinuityAdapter:
             output.append(replace(person, tracking_id=stable_id, metadata=metadata))
         return output
 
+    def predicted_tracks(
+        self,
+        frame_shape: tuple[int, ...],
+        *,
+        exclude_ids: set[int] | frozenset[int] = frozenset(),
+    ) -> list[TrackedDetection]:
+        """Return bounded, visual-only projections for temporarily lost tracks.
+
+        Projections never pass through the wrapped tracker and callers must not
+        submit them to a passenger counter.  The ``prediction_only`` metadata is
+        a second, machine-readable guard against treating them as observations.
+        """
+
+        height, width = frame_shape[:2]
+        predictions: list[TrackedDetection] = []
+        for state in self._states.values():
+            age = self._frame_number - state.last_seen_frame
+            if (
+                state.stable_id in exclude_ids
+                or not 1 <= age <= self.max_gap_frames
+            ):
+                continue
+            shifted = _shift_box(
+                state.bounding_box,
+                state.velocity[0] * age,
+                state.velocity[1] * age,
+            )
+            clipped = _clip_box(shifted, width=width, height=height)
+            if clipped is None:
+                continue
+            metadata = dict(state.metadata or {})
+            flags = _quality_flags(metadata.get("quality_flags"))
+            metadata.update(
+                {
+                    "prediction_only": True,
+                    "raw_tracking_id": state.raw_id,
+                    "continuity_prediction_age_frames": age,
+                    "quality_flags": tuple(
+                        dict.fromkeys((*flags, "track_prediction_only"))
+                    ),
+                }
+            )
+            confidence_decay = max(
+                0.05,
+                1.0 - age / max(2, self.max_gap_frames + 2),
+            )
+            predictions.append(
+                TrackedDetection(
+                    tracking_id=state.stable_id,
+                    bounding_box=clipped,
+                    confidence=state.confidence * confidence_decay,
+                    class_id=state.class_id,
+                    source_views=state.source_views,
+                    metadata=metadata,
+                )
+            )
+        self._predicted_track_frames += len(predictions)
+        self._maximum_simultaneous_predictions = max(
+            self._maximum_simultaneous_predictions,
+            len(predictions),
+        )
+        return predictions
+
     def reset(self) -> None:
         """Clear both wrapped ByteTrack and all video-local continuity state."""
 
@@ -482,6 +556,7 @@ class TrackContinuityAdapter:
         self._frame_number = -1
         self._states.clear()
         self._raw_to_stable.clear()
+        self._used_stable_ids.clear()
         self._next_stable_id = 0
         self._stitch_attempts = 0
         self._candidate_pairs_evaluated = 0
@@ -489,6 +564,8 @@ class TrackContinuityAdapter:
         self._new_stable_tracks = 0
         self._expired_memories = 0
         self._maximum_stitched_gap_frames = 0
+        self._predicted_track_frames = 0
+        self._maximum_simultaneous_predictions = 0
 
     def _candidate(
         self,
@@ -553,12 +630,13 @@ class TrackContinuityAdapter:
         )
 
     def _allocate_stable_id(self, raw_id: int) -> int:
-        if raw_id not in self._states:
+        if raw_id not in self._used_stable_ids:
             stable_id = raw_id
         else:
             stable_id = max(self._next_stable_id, max(self._states, default=-1) + 1)
-            while stable_id in self._states:
+            while stable_id in self._used_stable_ids:
                 stable_id += 1
+        self._used_stable_ids.add(stable_id)
         self._next_stable_id = max(self._next_stable_id, stable_id + 1)
         return stable_id
 
@@ -586,6 +664,10 @@ class TrackContinuityAdapter:
             center=person.center,
             velocity=velocity,
             observations=observations,
+            confidence=person.confidence,
+            class_id=person.class_id,
+            source_views=person.source_views,
+            metadata=dict(person.metadata),
         )
 
     def _expire_old_states(self) -> None:
@@ -610,6 +692,28 @@ def _shift_box(
 ) -> tuple[float, float, float, float]:
     left, top, right, bottom = box
     return left + dx, top + dy, right + dx, bottom + dy
+
+
+def _clip_box(
+    box: tuple[float, float, float, float],
+    *,
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float] | None:
+    """Clip a predicted box to the frame or discard it when fully outside."""
+
+    left, top, right, bottom = box
+    if right < 0 or bottom < 0 or left > width - 1 or top > height - 1:
+        return None
+    clipped = (
+        max(0.0, min(float(width - 1), left)),
+        max(0.0, min(float(height - 1), top)),
+        max(0.0, min(float(width - 1), right)),
+        max(0.0, min(float(height - 1), bottom)),
+    )
+    if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+        return None
+    return clipped
 
 
 def _box_iou(
