@@ -1,7 +1,7 @@
-"""Detector-only measurement for TrackBus person predictions.
+"""Detector-only measurement for one TrackBus detection target.
 
 This module deliberately does not import or invoke tracking, zones, counting, or
-event logic.  It can therefore answer whether a failure starts at person
+event logic.  It can therefore answer whether a failure starts at object
 detection before downstream components are changed.
 """
 
@@ -172,10 +172,13 @@ def load_detection_ground_truth(path: Path) -> DetectionGroundTruth:
             raise DetectionBenchmarkError(
                 f"Detection ground truth contains duplicate frame {frame_number}."
             )
-        raw_people = raw_frame.get("persons", raw_frame.get("boxes"))
+        raw_people = raw_frame.get(
+            "targets", raw_frame.get("persons", raw_frame.get("boxes"))
+        )
         if not isinstance(raw_people, list):
             raise DetectionBenchmarkError(
-                f"frames[{index}].persons must be a list, including for empty frames."
+                f"frames[{index}].targets (or persons) must be a list, including "
+                "for empty frames."
             )
         people = tuple(
             _ground_truth_person(value, coordinate_space, index, person_index)
@@ -201,6 +204,7 @@ def benchmark_detector(
     device_label: str,
     requested_precision: str = "fp32",
     effective_precision: str | None = None,
+    detection_target: str = "person",
     ground_truth: DetectionGroundTruth | None = None,
     low_confidence_threshold: float = 0.35,
     matching_iou_threshold: float = 0.50,
@@ -343,6 +347,7 @@ def benchmark_detector(
         confidence_threshold=confidence_threshold,
         requested_precision=requested_precision,
         effective_precision=effective_precision or requested_precision,
+        detection_target=detection_target,
         low_confidence_threshold=low_confidence_threshold,
         matching_iou_threshold=matching_iou_threshold,
         stability_iou_threshold=stability_iou_threshold,
@@ -457,6 +462,7 @@ def _build_summary(
     confidence_threshold: float,
     requested_precision: str,
     effective_precision: str,
+    detection_target: str,
     low_confidence_threshold: float,
     matching_iou_threshold: float,
     stability_iou_threshold: float,
@@ -507,6 +513,7 @@ def _build_summary(
             "processed_frame_count": frame_count,
         },
         "configuration": {
+            "detection_target": detection_target,
             "model": model_name,
             "image_size": image_size,
             "confidence_threshold": confidence_threshold,

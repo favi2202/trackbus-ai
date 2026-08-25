@@ -248,7 +248,9 @@ def test_ultralytics_predict_forwards_person_only_settings_and_preserves_values(
     assert [detection.class_id for detection in detections] == [0, 0]
     assert all(detection.source_view == "left" for detection in detections)
     assert all(
-        detection.metadata == {"coordinate_space": "view"} for detection in detections
+        detection.metadata
+        == {"coordinate_space": "view", "detection_target": "person"}
+        for detection in detections
     )
 
 

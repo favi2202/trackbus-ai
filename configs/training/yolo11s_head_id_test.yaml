@@ -1,0 +1,21 @@
+# Reproducible starting point for the isolated HEAD_id_test experiment.
+# This configuration does not claim that training happened or improved accuracy.
+task: detect
+mode: train
+model: yolo11s.pt
+data: configs/training/trackbus_head_dataset.yaml
+epochs: 100
+patience: 20
+imgsz: 960
+batch: 4
+device: 0
+workers: 2
+pretrained: true
+cache: false
+seed: 2202
+deterministic: true
+amp: true
+plots: true
+project: data/output/training
+name: yolo11s-head-id-test
+exist_ok: false

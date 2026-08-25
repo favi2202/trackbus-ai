@@ -97,6 +97,11 @@ and rejection reasons for labeled-video reconciliation. Prefer the
 appear in shell history. The default zones are a safe presentation
 starting point; a real camera must be calibrated for its doorway geometry.
 
+The isolated `HEAD_id_test` branch adds a one-class anonymous head detector
+experiment without replacing the production person detector. It requires actual
+head-labelled weights and rejects ordinary COCO person weights in head mode.
+See the [head detector A/B guide](docs/head-id-test.md).
+
 Keyboard controls:
 
 | Key | Action |

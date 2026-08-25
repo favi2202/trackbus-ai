@@ -74,6 +74,7 @@ class ShowcaseDiagnostics:
     preprocessing_profile: str
     camera_quality_status: str
     lock_on_gap_frames: int = 0
+    detection_target: str = "person"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--save-zones", type=Path, default=Path("configs/showcase_zones.yaml")
     )
     parser.add_argument("--model", default="yolo11n.pt")
+    parser.add_argument(
+        "--detection-target",
+        choices=("person", "head"),
+        default="person",
+        help=(
+            "Verified class-0 object to track; head requires custom weights "
+            "whose class 0 label is exactly 'head'"
+        ),
+    )
     parser.add_argument("--confidence", type=float, default=0.35)
     parser.add_argument(
         "--detector-floor",
@@ -452,10 +462,12 @@ def _draw_track(
     )
     thickness = 1 if prediction_only else 2
     cv2.rectangle(frame, (left, top), (right, bottom), color, thickness)
-    label = f"T{track.tracking_id} {track.confidence:.2f}"
+    target = str(track.metadata.get("detection_target", "person"))
+    identifier = "H" if target == "head" else "T"
+    label = f"{identifier}{track.tracking_id} {track.confidence:.2f}"
     if prediction_only:
         age = int(track.metadata.get("continuity_prediction_age_frames", 0))
-        label = f"T{track.tracking_id} LOCK {age}f"
+        label = f"{identifier}{track.tracking_id} LOCK {age}f"
     cv2.putText(
         frame,
         label,
@@ -646,7 +658,12 @@ def _draw_panel(
     height, width = frame.shape[:2]
     padding = 18
     title = "TRACKBUS VISION"
-    subtitle = "EDGE AI | LIVE | ANONYMOUS TEMPORARY IDS"
+    subtitle_mode = (
+        "HEAD TEST"
+        if diagnostics is not None and diagnostics.detection_target == "head"
+        else "LIVE"
+    )
+    subtitle = f"EDGE AI | {subtitle_mode} | ANONYMOUS TEMPORARY IDS"
     summary = (
         f"IN {state.boardings}   OUT {state.alightings}   "
         f"ONBOARD {state.occupancy}   TRACKS {active_tracks}"
@@ -713,7 +730,8 @@ def _draw_panel(
         )
         config_text = (
             f"MODEL {Path(diagnostics.model_name).name} | IMG {diagnostics.image_size} "
-            f"| FLOOR {diagnostics.detector_floor:.2f} | "
+            f"| TARGET {diagnostics.detection_target.upper()} | "
+            f"FLOOR {diagnostics.detector_floor:.2f} | "
             f"TRACKER {Path(diagnostics.tracker_profile).name} | "
             f"PRE {diagnostics.preprocessing_profile} | "
             f"LOCK {diagnostics.lock_on_gap_frames}f"
@@ -876,6 +894,7 @@ def run(args: argparse.Namespace) -> int:
         device=device,
         device_label=device_label,
         detector_floor=args.detector_floor,
+        target_class_name=args.detection_target,
     )
     detector = PreprocessingDetector(base_detector, args.preprocessing_profile)
     base_tracker = ByteTrackAdapter(args.tracker, device_label=device_label)
@@ -896,6 +915,7 @@ def run(args: argparse.Namespace) -> int:
         preprocessing_profile=args.preprocessing_profile,
         camera_quality_status=camera_quality_status,
         lock_on_gap_frames=args.lock_on_gap_frames,
+        detection_target=args.detection_target,
     )
     confidence_contract = base_tracker.confidence_contract(args.detector_floor)
     if warning := confidence_contract.get("warning"):
@@ -932,6 +952,13 @@ def run(args: argparse.Namespace) -> int:
                 "recordType": "trajectory-run",
                 "algorithm": "monotonic-two-gate-v1",
                 "source": str(source),
+                "detectionTarget": args.detection_target,
+                "model": args.model,
+                "imageSize": args.imgsz,
+                "detectorFloor": args.detector_floor,
+                "operationalConfidence": args.confidence,
+                "tracker": args.tracker,
+                "preprocessingProfile": args.preprocessing_profile,
                 "outsideGate": round(counter.geometry.outside_gate, 6),
                 "insideGate": round(counter.geometry.inside_gate, 6),
                 "gateHysteresis": args.gate_hysteresis,
@@ -1012,9 +1039,11 @@ def run(args: argparse.Namespace) -> int:
                             f"{crossing.direction} CONFIRMED | "
                             f"OCCUPANCY {state.occupancy}"
                         )
+                        identifier = "H" if args.detection_target == "head" else "T"
                         print(
                             f"{event.observed_at} {crossing.direction} "
-                            f"track=T{crossing.track_id} occupancy={state.occupancy} "
+                            f"track={identifier}{crossing.track_id} "
+                            f"occupancy={state.occupancy} "
                             f"confidence={crossing.confidence:.3f} "
                             f"delivered={result.delivered} queued={result.queued}",
                             flush=True,
@@ -1116,13 +1145,32 @@ def run(args: argparse.Namespace) -> int:
             trajectory_stream.write(
                 json.dumps(decision.to_payload(), separators=(",", ":")) + "\n"
             )
+        trajectory_stream.write(
+            json.dumps(
+                {
+                    "recordType": "trajectory-summary",
+                    "detectionTarget": args.detection_target,
+                    "processedFrames": processed,
+                    "boardings": state.boardings,
+                    "alightings": state.alightings,
+                    "occupancy": state.occupancy,
+                    "queuedEvents": api.queued_count,
+                    "continuity": tracker.continuity_summary,
+                    "counting": counter.summary,
+                    "accuracyClaimed": False,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
         trajectory_stream.close()
         if not args.headless:
             cv2.destroyAllWindows()
     continuity = tracker.continuity_summary
     counting = counter.summary
     print(
-        f"TrackBus Vision stopped · processed={processed} in={state.boardings} "
+        f"TrackBus Vision stopped · target={args.detection_target} "
+        f"processed={processed} in={state.boardings} "
         f"out={state.alightings} occupancy={state.occupancy} queued={api.queued_count} "
         f"stitched={continuity['stitched_track_fragments']} "
         f"reversed_rejected={counting['reversed_journeys']} "

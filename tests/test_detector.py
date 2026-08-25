@@ -1,8 +1,14 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
-from trackbus.detector import PersonDetector, UltralyticsDetector
+from trackbus.detector import (
+    DetectorError,
+    PersonDetector,
+    UltralyticsDetector,
+    validate_class_zero_contract,
+)
 
 
 class FakeModel:
@@ -57,3 +63,20 @@ def test_detector_floor_is_forwarded_without_changing_confidence_reference() -> 
 
     assert model.arguments["conf"] == 0.10
     assert detector.confidence == 0.35
+
+
+def test_head_target_contract_accepts_only_class_zero_head() -> None:
+    assert validate_class_zero_contract({0: "head"}, "head") == "head"
+    assert validate_class_zero_contract(["Human-Head"], "human head") == (
+        "Human-Head"
+    )
+
+
+def test_head_target_contract_rejects_standard_person_weights() -> None:
+    with pytest.raises(DetectorError, match="class 0 is 'person'.*requires 'head'"):
+        validate_class_zero_contract({0: "person", 1: "bicycle"}, "head")
+
+
+def test_head_target_contract_rejects_unverifiable_model_labels() -> None:
+    with pytest.raises(DetectorError, match="does not expose a text label"):
+        validate_class_zero_contract(None, "head")

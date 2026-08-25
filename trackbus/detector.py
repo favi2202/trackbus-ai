@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,54 @@ LOGGER = logging.getLogger(__name__)
 
 class DetectorError(RuntimeError):
     """Raised when the YOLO model cannot be loaded or used."""
+
+
+def validate_class_zero_contract(
+    model_names: object,
+    expected_name: str,
+) -> str:
+    """Require the configured target to be class 0 before ByteTrack receives it."""
+
+    expected = _normalized_class_name(expected_name)
+    if not expected:
+        raise DetectorError("Expected detector class name cannot be empty.")
+    names: dict[int, str] = {}
+    if isinstance(model_names, Mapping):
+        for raw_id, raw_name in model_names.items():
+            try:
+                class_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(raw_name, str):
+                names[class_id] = raw_name
+    elif isinstance(model_names, Sequence) and not isinstance(
+        model_names, (str, bytes)
+    ):
+        names = {
+            class_id: raw_name
+            for class_id, raw_name in enumerate(model_names)
+            if isinstance(raw_name, str)
+        }
+    actual = names.get(0)
+    if actual is None:
+        raise DetectorError(
+            "YOLO model does not expose a text label for class 0; the detector "
+            "target cannot be verified safely."
+        )
+    if _normalized_class_name(actual) != expected:
+        available = ", ".join(
+            f"{class_id}:{name}" for class_id, name in sorted(names.items())
+        )
+        raise DetectorError(
+            f"YOLO class 0 is '{actual}', but this run requires "
+            f"'{expected_name}'. Use a trained {expected_name} model whose only "
+            f"target is class 0. Model labels: {available}."
+        )
+    return actual
+
+
+def _normalized_class_name(value: str) -> str:
+    return "_".join(value.strip().lower().replace("-", " ").split())
 
 
 def resolve_device(requested: str) -> tuple[str | int, str]:
@@ -56,7 +105,7 @@ def resolve_device(requested: str) -> tuple[str | int, str]:
 
 
 class UltralyticsDetector:
-    """Run person-only ``YOLO.predict`` and return untracked detections."""
+    """Run one verified class-0 ``YOLO.predict`` target without tracker state."""
 
     PERSON_CLASS_ID = 0
 
@@ -71,6 +120,7 @@ class UltralyticsDetector:
         detector_floor: float | None = None,
         half: bool = False,
         precision: str | None = None,
+        target_class_name: str | None = None,
     ) -> None:
         if not 0.0 < confidence <= 1.0:
             raise ValueError("confidence must be greater than 0 and at most 1")
@@ -116,9 +166,15 @@ class UltralyticsDetector:
             raise DetectorError(
                 f"Could not load YOLO model '{model_path}': {exc}"
             ) from exc
+        self.target_class_name = target_class_name or "person"
+        if target_class_name is not None:
+            validate_class_zero_contract(
+                getattr(self._model, "names", None),
+                target_class_name,
+            )
 
     def detect(self, image: NDArray[np.uint8], *, source_view: str) -> list[Detection]:
-        """Return class-0 predictions before any tracking."""
+        """Return verified class-0 predictions before any tracking."""
 
         prediction_options: dict[str, Any] = {
             "source": image,
@@ -153,7 +209,12 @@ class UltralyticsDetector:
                 confidence=float(confidence),
                 class_id=int(class_id),
                 source_view=source_view,
-                metadata={"coordinate_space": "view"},
+                metadata={
+                    "coordinate_space": "view",
+                    "detection_target": getattr(
+                        self, "target_class_name", "person"
+                    ),
+                },
             )
             for coordinate, confidence, class_id in zip(
                 coordinates, confidences, classes, strict=True
@@ -176,6 +237,7 @@ class PersonDetector(UltralyticsDetector):
             image_size,
             device="cpu",
             device_label="cpu",
+            target_class_name="person",
         )
 
     def infer_with_tracking(

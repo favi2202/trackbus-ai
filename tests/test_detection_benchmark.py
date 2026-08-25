@@ -100,6 +100,7 @@ def test_detector_only_benchmark_reports_proxies_without_claiming_accuracy(
     assert result.summary["uses_counting"] is False
     assert result.summary["metric_status"] == "proxy_only_no_box_ground_truth"
     assert result.summary["ground_truth"] is None
+    assert result.summary["configuration"]["detection_target"] == "person"
     assert result.summary["detections"]["total"] == 2
     assert result.summary["detections"]["frames_without_detections"] == 2
     assert result.summary["detections"]["zero_detection_streak_lengths"] == [2]
@@ -226,6 +227,26 @@ def test_ground_truth_loader_rejects_invalid_documents(
         load_detection_ground_truth(path)
 
 
+def test_ground_truth_loader_accepts_target_boxes_for_head_evaluation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "heads.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "coordinate_space": "pixels",
+                "frames": [{"frame": 0, "targets": [[1, 2, 8, 9]]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    truth = load_detection_ground_truth(path)
+
+    assert truth.frames[0][0].bounding_box == (1.0, 2.0, 8.0, 9.0)
+
+
 def test_benchmark_artifacts_are_machine_readable(tmp_path: Path) -> None:
     video = write_video(tmp_path, frame_count=1)
     result = benchmark_detector(
@@ -286,6 +307,15 @@ def test_benchmark_cli_accepts_detector_floor_and_defaults_preprocessing_off() -
 
     assert args.detector_floor == 0.10
     assert args.preprocessing_profile == "none"
+    assert args.detection_target == "person"
+
+
+def test_benchmark_cli_accepts_head_target() -> None:
+    args = build_parser().parse_args(
+        ["--video", "bus.mp4", "--detection-target", "head"]
+    )
+
+    assert args.detection_target == "head"
 
 
 def test_cli_refuses_to_overwrite_the_input_video_before_loading_a_model(

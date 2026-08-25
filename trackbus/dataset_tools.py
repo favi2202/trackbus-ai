@@ -25,6 +25,11 @@ FAILURE_TAGS = {
     "compression",
     "partial_upper_body",
     "full_person",
+    "small_head",
+    "headwear",
+    "hood",
+    "hair_variation",
+    "motion_blur",
 }
 DEFAULT_CLASSES = ("person_full", "person_upper_body")
 

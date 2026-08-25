@@ -1,0 +1,9 @@
+# Experimental local-only data contract for HEAD_id_test.
+# Do not commit frames, labels, passenger images, or passenger identity.
+path: datasets/trackbus-head
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: head

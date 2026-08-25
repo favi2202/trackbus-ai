@@ -62,8 +62,9 @@ camera and recording group:
 ```
 
 Supported diagnostic tags are `occlusion`, `edge`, `low_light`, `crowding`,
-`compression`, `partial_upper_body`, and `full_person`. They describe failure
-conditions; they are not passenger identity.
+`compression`, `partial_upper_body`, `full_person`, `small_head`, `headwear`,
+`hood`, `hair_variation`, and `motion_blur`. They describe failure conditions;
+they are not passenger identity or model classes.
 
 ## Validate before splitting
 

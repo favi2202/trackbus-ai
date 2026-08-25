@@ -196,6 +196,15 @@ def test_showcase_exposes_a_separate_detector_floor() -> None:
     assert args.gate_hysteresis == pytest.approx(0.03)
     assert args.minimum_journey_frames == 3
     assert args.trajectory_log.name == "showcase-trajectory.jsonl"
+    assert args.detection_target == "person"
+
+
+def test_showcase_accepts_isolated_head_target() -> None:
+    args = build_parser().parse_args(
+        ["--video", "bus.mp4", "--detection-target", "head"]
+    )
+
+    assert args.detection_target == "head"
 
 
 @pytest.mark.parametrize("shape", [(720, 1280), (1080, 1920)])
@@ -226,6 +235,7 @@ def test_diagnostic_ribbon_fits_720p_and_1080p_without_overlap(
             tracker_profile="configs/tracking_occlusion.yaml",
             preprocessing_profile="low_light",
             camera_quality_status="MARGINAL",
+            detection_target="head",
         ),
         failure_flags=("LOW CONF", "OVERLAP"),
     )
@@ -240,6 +250,7 @@ def test_diagnostic_ribbon_fits_720p_and_1080p_without_overlap(
     assert all(0 <= left < right <= shape[1] for left, _, right, _ in bounds)
     assert not _overlaps(bounds[0], bounds[1])
     assert "TRACKER tracking_occlusion.yaml" in ribbon[0][0]
+    assert "TARGET HEAD" in ribbon[0][0]
     assert "FLAGS LOW CONF+OVERLAP" in ribbon[1][0]
 
 

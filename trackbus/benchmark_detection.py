@@ -60,12 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m trackbus.benchmark_detection",
         description=(
-            "Benchmark YOLO person detections without tracking, zones, or IN/OUT "
+            "Benchmark one YOLO class-0 target without tracking, zones, or IN/OUT "
             "counting. Precision/recall/F1 are reported only with box ground truth."
         ),
     )
     parser.add_argument("--video", required=True, type=Path, help="Local input video")
     parser.add_argument("--model", default="yolo11n.pt", help="YOLO weights")
+    parser.add_argument(
+        "--detection-target",
+        choices=("person", "head"),
+        default="person",
+        help="Required text label for model class 0",
+    )
     parser.add_argument("--imgsz", type=_image_size, default=640)
     parser.add_argument(
         "--conf",
@@ -132,8 +138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         )
         LOGGER.info(
-            "Detector-only run: model=%s imgsz=%d floor=%.3f "
+            "Detector-only run: target=%s model=%s imgsz=%d floor=%.3f "
             "preprocessing=%s device=%s",
+            args.detection_target,
             args.model,
             args.imgsz,
             args.detector_floor,
@@ -147,6 +154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             device=device,
             device_label=device_label,
             precision=args.precision,
+            target_class_name=args.detection_target,
         )
         detector = PreprocessingDetector(
             base_detector,
@@ -161,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             device_label=device_label,
             requested_precision=args.precision,
             effective_precision=detector.precision,
+            detection_target=args.detection_target,
             ground_truth=ground_truth,
             low_confidence_threshold=args.low_confidence,
             matching_iou_threshold=args.ground_truth_iou,
