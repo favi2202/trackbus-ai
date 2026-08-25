@@ -27,7 +27,8 @@ from trackbus.fusion import box_iou
 from trackbus.preprocessing import PreprocessingDetector, PreprocessingProfile
 from trackbus.showcase_zones import (
     CrossingEvent,
-    DualAnchorCrossingCounter,
+    GateGeometry,
+    MonotonicGateCounter,
     Zone,
     ZoneLayout,
     load_zone_layout,
@@ -131,7 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional JSON output from python -m trackbus.camera_quality",
     )
-    parser.add_argument("--minimum-zone-frames", type=int, default=2)
+    parser.add_argument(
+        "--minimum-zone-frames",
+        type=int,
+        default=2,
+        help="Real center observations required at each gate endpoint",
+    )
     parser.add_argument("--maximum-transition-gap", type=int, default=45)
     parser.add_argument(
         "--lock-on-gap-frames",
@@ -160,8 +166,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--event-cooldown-frames",
         type=int,
-        default=45,
-        help="Shared top/bottom-anchor latch preventing duplicate journey events",
+        default=90,
+        help="Per-ID latch blocking implausibly fast repeat or reverse events",
+    )
+    parser.add_argument(
+        "--minimum-direction-consistency",
+        type=float,
+        default=0.70,
+        help="Required fraction of significant center motion toward destination",
+    )
+    parser.add_argument(
+        "--gate-hysteresis",
+        type=float,
+        default=0.03,
+        help="Normalized dead band around each calibrated trajectory gate",
+    )
+    parser.add_argument(
+        "--minimum-journey-frames",
+        type=int,
+        default=3,
+        help="Minimum real frame span from confirmed origin to destination",
+    )
+    parser.add_argument(
+        "--trajectory-log",
+        type=Path,
+        default=Path("data/output/showcase-trajectory.jsonl"),
+        help="JSONL audit of gate decisions and rejected journeys",
     )
     parser.add_argument(
         "--notify-cooldown",
@@ -172,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--api-url",
         default=None,
-        help="TrackBus API base URL; hosted showcase uses https://trackbus-showcase.favi-2202.chatgpt.site/api",
+        help="TrackBus API base URL; hosted showcase uses https://trackbus-showcase.favi.workers.dev/api",
     )
     parser.add_argument(
         "--api-key",
@@ -342,7 +372,11 @@ def calibrate(source: int | str, destination: Path) -> int:
         cv2.destroyWindow(WINDOW)
 
 
-def _draw_zone_overlay(frame: np.ndarray, layout: ZoneLayout) -> None:
+def _draw_zone_overlay(
+    frame: np.ndarray,
+    layout: ZoneLayout,
+    geometry: GateGeometry | None = None,
+) -> None:
     translucent = frame.copy()
     for zone, polygon in layout.pixel_polygons(frame.shape).items():
         values = np.asarray(polygon, dtype=np.int32)
@@ -360,6 +394,41 @@ def _draw_zone_overlay(frame: np.ndarray, layout: ZoneLayout) -> None:
             0.46,
             ZONE_COLORS[zone],
             2,
+        )
+    gate_geometry = geometry or GateGeometry.from_layout(layout)
+    height, width = frame.shape[:2]
+    perpendicular = -gate_geometry.axis[1], gate_geometry.axis[0]
+    for label, progress in (
+        ("GATE A", gate_geometry.outside_gate),
+        ("GATE B", gate_geometry.inside_gate),
+    ):
+        center = (
+            gate_geometry.origin[0]
+            + gate_geometry.axis[0] * gate_geometry.span * progress,
+            gate_geometry.origin[1]
+            + gate_geometry.axis[1] * gate_geometry.span * progress,
+        )
+        endpoints = tuple(
+            (
+                round((center[0] + perpendicular[0] * extent) * (width - 1)),
+                round((center[1] + perpendicular[1] * extent) * (height - 1)),
+            )
+            for extent in (-2.0, 2.0)
+        )
+        visible, clipped_start, clipped_end = cv2.clipLine(
+            (0, 0, width, height), endpoints[0], endpoints[1]
+        )
+        if not visible:
+            continue
+        cv2.line(frame, clipped_start, clipped_end, (230, 235, 240), 1)
+        cv2.putText(
+            frame,
+            label,
+            (max(4, clipped_start[0] + 5), max(18, clipped_start[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.40,
+            (230, 235, 240),
+            1,
         )
 
 
@@ -404,12 +473,6 @@ def _draw_track(
     if len(trail) > 1:
         cv2.polylines(frame, [display_trail], False, color, thickness)
     cv2.circle(frame, tuple(display_trail[-1]), 3, color, -1)
-    for anchor in (track.top_center, track.anchor):
-        display_anchor = (
-            round(anchor[0] * scale_x),
-            round(anchor[1] * scale_y),
-        )
-        cv2.circle(frame, display_anchor, 4, color, -1)
 
 
 def _prepare_display_frame(
@@ -791,6 +854,12 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("lock-on match score must be between 0 and 1")
     if args.event_cooldown_frames < 0:
         raise ValueError("event cooldown frames cannot be negative")
+    if not 0.5 <= args.minimum_direction_consistency <= 1:
+        raise ValueError("minimum direction consistency must be between 0.5 and 1")
+    if not 0 <= args.gate_hysteresis < 0.20:
+        raise ValueError("gate hysteresis must be between 0 and 0.2")
+    if args.minimum_journey_frames < 2:
+        raise ValueError("minimum journey frames must be at least 2")
     source = resolve_source(args)
     if args.calibrate:
         if args.headless:
@@ -831,11 +900,14 @@ def run(args: argparse.Namespace) -> int:
     confidence_contract = base_tracker.confidence_contract(args.detector_floor)
     if warning := confidence_contract.get("warning"):
         LOGGER.warning("%s", warning)
-    counter = DualAnchorCrossingCounter(
+    counter = MonotonicGateCounter(
         layout,
         minimum_zone_frames=args.minimum_zone_frames,
         maximum_gap_frames=args.maximum_transition_gap,
         event_cooldown_frames=args.event_cooldown_frames,
+        minimum_direction_consistency=args.minimum_direction_consistency,
+        gate_hysteresis=args.gate_hysteresis,
+        minimum_journey_frames=args.minimum_journey_frames,
     )
     api = TrackBusApiClient(
         args.api_url,
@@ -851,6 +923,29 @@ def run(args: argparse.Namespace) -> int:
     fps_samples: deque[float] = deque(maxlen=30)
     last_frame: np.ndarray | None = None
     zero_detection_streak = 0
+    trajectory_path = args.trajectory_log.expanduser()
+    trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+    trajectory_stream = trajectory_path.open("w", encoding="utf-8")
+    trajectory_stream.write(
+        json.dumps(
+            {
+                "recordType": "trajectory-run",
+                "algorithm": "monotonic-two-gate-v1",
+                "source": str(source),
+                "outsideGate": round(counter.geometry.outside_gate, 6),
+                "insideGate": round(counter.geometry.inside_gate, 6),
+                "gateHysteresis": args.gate_hysteresis,
+                "minimumDirectionConsistency": (
+                    args.minimum_direction_consistency
+                ),
+                "minimumJourneyFrames": args.minimum_journey_frames,
+                "eventCooldownFrames": args.event_cooldown_frames,
+                "predictionPolicy": "visual-only",
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
 
     if not args.headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -924,6 +1019,14 @@ def run(args: argparse.Namespace) -> int:
                             f"delivered={result.delivered} queued={result.queued}",
                             flush=True,
                         )
+                for decision in counter.drain_decisions():
+                    trajectory_stream.write(
+                        json.dumps(
+                            decision.to_payload(), separators=(",", ":")
+                        )
+                        + "\n"
+                    )
+                trajectory_stream.flush()
                 for track in locked_tracks:
                     track_zones[track.tracking_id] = counter.display_zone(
                         track, frame.shape
@@ -951,7 +1054,7 @@ def run(args: argparse.Namespace) -> int:
                             trails[track.tracking_id],
                             display_scale,
                         )
-                    _draw_zone_overlay(display_frame, layout)
+                    _draw_zone_overlay(display_frame, layout, counter.geometry)
                     _draw_panel(
                         display_frame,
                         state,
@@ -1009,6 +1112,11 @@ def run(args: argparse.Namespace) -> int:
                 break
     finally:
         capture.release()
+        for decision in counter.drain_decisions():
+            trajectory_stream.write(
+                json.dumps(decision.to_payload(), separators=(",", ":")) + "\n"
+            )
+        trajectory_stream.close()
         if not args.headless:
             cv2.destroyAllWindows()
     continuity = tracker.continuity_summary
@@ -1017,7 +1125,10 @@ def run(args: argparse.Namespace) -> int:
         f"TrackBus Vision stopped · processed={processed} in={state.boardings} "
         f"out={state.alightings} occupancy={state.occupancy} queued={api.queued_count} "
         f"stitched={continuity['stitched_track_fragments']} "
-        f"duplicate_events_suppressed={counting['suppressed_duplicate_events']}"
+        f"reversed_rejected={counting['reversed_journeys']} "
+        f"direction_rejected={counting['inconsistent_direction_rejections']} "
+        f"cooldown_suppressed={counting['event_cooldown_suppressed']} "
+        f"trajectory_log={trajectory_path}"
     )
     return 0
 

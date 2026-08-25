@@ -52,52 +52,6 @@ def point_in_polygon(point: tuple[float, float], polygon: NormalizedPolygon) -> 
     return inside
 
 
-def _orientation(
-    first: tuple[float, float],
-    second: tuple[float, float],
-    third: tuple[float, float],
-) -> float:
-    return (second[0] - first[0]) * (third[1] - first[1]) - (
-        second[1] - first[1]
-    ) * (third[0] - first[0])
-
-
-def _segments_intersect(
-    first_start: tuple[float, float],
-    first_end: tuple[float, float],
-    second_start: tuple[float, float],
-    second_end: tuple[float, float],
-) -> bool:
-    """Return true when two closed line segments touch or cross."""
-
-    values = (
-        _orientation(first_start, first_end, second_start),
-        _orientation(first_start, first_end, second_end),
-        _orientation(second_start, second_end, first_start),
-        _orientation(second_start, second_end, first_end),
-    )
-    if values[0] * values[1] < 0 and values[2] * values[3] < 0:
-        return True
-
-    def on_segment(
-        start: tuple[float, float],
-        point: tuple[float, float],
-        end: tuple[float, float],
-    ) -> bool:
-        return (
-            abs(_orientation(start, point, end)) < 1e-9
-            and min(start[0], end[0]) <= point[0] <= max(start[0], end[0])
-            and min(start[1], end[1]) <= point[1] <= max(start[1], end[1])
-        )
-
-    return (
-        on_segment(first_start, second_start, first_end)
-        or on_segment(first_start, second_end, first_end)
-        or on_segment(second_start, first_start, second_end)
-        or on_segment(second_start, first_end, second_end)
-    )
-
-
 @dataclass(frozen=True)
 class ZoneLayout:
     outside: NormalizedPolygon
@@ -137,42 +91,6 @@ class ZoneLayout:
             ]
             for zone in (Zone.OUTSIDE, Zone.DOOR, Zone.INSIDE)
         }
-
-    def segment_crosses_zone(
-        self,
-        start: tuple[float, float],
-        end: tuple[float, float],
-        zone: Zone,
-        frame_shape: tuple[int, ...],
-    ) -> bool:
-        """Test whether a real-to-real anchor segment crosses one zone polygon."""
-
-        if zone not in {Zone.OUTSIDE, Zone.DOOR, Zone.INSIDE}:
-            return False
-        height, width = frame_shape[:2]
-        normalized_start = (
-            start[0] / max(1, width - 1),
-            start[1] / max(1, height - 1),
-        )
-        normalized_end = (
-            end[0] / max(1, width - 1),
-            end[1] / max(1, height - 1),
-        )
-        polygon = getattr(self, zone.value)
-        if point_in_polygon(normalized_start, polygon) or point_in_polygon(
-            normalized_end, polygon
-        ):
-            return True
-        return any(
-            _segments_intersect(
-                normalized_start,
-                normalized_end,
-                polygon[index - 1],
-                polygon[index],
-            )
-            for index in range(len(polygon))
-        )
-
 
 def load_zone_layout(path: str | Path | None) -> ZoneLayout:
     if path is None:
@@ -242,7 +160,6 @@ class CrossingStateMachine:
         zone: Zone,
         frame_number: int,
         confidence: float,
-        bridged_door: bool = False,
     ) -> CrossingEvent | None:
         state = self._tracks.setdefault(track_id, _TrackState(last_seen=frame_number))
         if frame_number - state.last_seen > self.maximum_gap_frames:
@@ -251,17 +168,6 @@ class CrossingStateMachine:
         state.last_seen = frame_number
         state.journey_frames += 1
         state.confidence_samples.append(max(0.0, min(1.0, confidence)))
-
-        if (
-            bridged_door
-            and state.origin in {Zone.OUTSIDE, Zone.INSIDE}
-            and zone
-            == (Zone.INSIDE if state.origin is Zone.OUTSIDE else Zone.OUTSIDE)
-        ):
-            # Both segment endpoints are real observations.  The bridge records
-            # only geometric evidence that their connecting path crossed DOOR;
-            # no predicted-only point can confirm an event.
-            state.saw_door = True
 
         if zone is Zone.UNKNOWN:
             state.candidate = Zone.UNKNOWN
@@ -327,22 +233,108 @@ class CrossingStateMachine:
         state.journey_frames = 1
 
 
+def _polygon_center(polygon: NormalizedPolygon) -> tuple[float, float]:
+    return (
+        sum(point[0] for point in polygon) / len(polygon),
+        sum(point[1] for point in polygon) / len(polygon),
+    )
+
+
 @dataclass(frozen=True)
-class _AnchorObservation:
-    point: tuple[float, float]
-    zone: Zone
+class GateGeometry:
+    """One calibrated OUTSIDE-to-INSIDE axis with two ordered gates."""
+
+    origin: tuple[float, float]
+    axis: tuple[float, float]
+    span: float
+    outside_gate: float
+    inside_gate: float
+
+    @classmethod
+    def from_layout(cls, layout: ZoneLayout) -> GateGeometry:
+        outside = _polygon_center(layout.outside)
+        door = _polygon_center(layout.door)
+        inside = _polygon_center(layout.inside)
+        delta = inside[0] - outside[0], inside[1] - outside[1]
+        span = (delta[0] ** 2 + delta[1] ** 2) ** 0.5
+        if span <= 1e-6:
+            raise ValueError("outside and inside zone centers must be distinct")
+        axis = delta[0] / span, delta[1] / span
+        door_progress = (
+            (door[0] - outside[0]) * axis[0]
+            + (door[1] - outside[1]) * axis[1]
+        ) / span
+        if not 0.05 < door_progress < 0.95:
+            raise ValueError("door zone center must lie between outside and inside")
+        return cls(
+            origin=outside,
+            axis=axis,
+            span=span,
+            outside_gate=door_progress / 2,
+            inside_gate=(door_progress + 1) / 2,
+        )
+
+    def progress(
+        self, point: tuple[float, float], frame_shape: tuple[int, ...]
+    ) -> float:
+        height, width = frame_shape[:2]
+        normalized = (
+            point[0] / max(1, width - 1),
+            point[1] / max(1, height - 1),
+        )
+        return (
+            (normalized[0] - self.origin[0]) * self.axis[0]
+            + (normalized[1] - self.origin[1]) * self.axis[1]
+        ) / self.span
+
+
+@dataclass(frozen=True)
+class TrajectoryDecision:
     frame_number: int
+    track_id: int
+    action: str
+    reason: str
+    progress: float | None = None
+    direction: str | None = None
+    origin: Zone | None = None
+    direction_consistency: float | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "recordType": "trajectory-decision",
+            "frameNumber": self.frame_number,
+            "trackId": f"T{self.track_id}",
+            "action": self.action,
+            "reason": self.reason,
+        }
+        if self.progress is not None:
+            payload["progress"] = round(self.progress, 6)
+        if self.direction is not None:
+            payload["direction"] = self.direction
+        if self.origin is not None:
+            payload["origin"] = self.origin.value
+        if self.direction_consistency is not None:
+            payload["directionConsistency"] = round(
+                self.direction_consistency, 6
+            )
+        return payload
 
 
-class DualAnchorCrossingCounter:
-    """Fuse top/bottom box anchors into one deduplicated crossing decision.
+@dataclass
+class _GateTrackState:
+    last_seen: int
+    candidate_origin: Zone = Zone.UNKNOWN
+    candidate_frames: int = 0
+    origin: Zone = Zone.UNKNOWN
+    origin_frame: int = 0
+    first_gate_crossed: bool = False
+    destination_frames: int = 0
+    origin_return_frames: int = 0
+    samples: list[tuple[int, float, float]] = field(default_factory=list)
 
-    Each anchor has independent zone history, but both share one event latch per
-    stable temporary track.  Prediction-only tracks are ignored by construction.
-    A short real-observation gap can bridge the DOOR polygon geometrically.
-    """
 
-    ANCHORS = ("bottom_center", "top_center")
+class MonotonicGateCounter:
+    """Count one real center trajectory crossing two calibrated gates in order."""
 
     def __init__(
         self,
@@ -350,61 +342,64 @@ class DualAnchorCrossingCounter:
         *,
         minimum_zone_frames: int = 2,
         maximum_gap_frames: int = 45,
-        event_cooldown_frames: int = 45,
+        event_cooldown_frames: int = 90,
+        minimum_direction_consistency: float = 0.70,
+        gate_hysteresis: float = 0.03,
+        minimum_journey_frames: int = 3,
     ) -> None:
+        if minimum_zone_frames < 1 or maximum_gap_frames < 1:
+            raise ValueError("zone dwell and maximum gap must be positive")
         if event_cooldown_frames < 0:
             raise ValueError("event cooldown cannot be negative")
+        if not 0.5 <= minimum_direction_consistency <= 1:
+            raise ValueError("direction consistency must be between 0.5 and 1")
+        if not 0 <= gate_hysteresis < 0.20:
+            raise ValueError("gate hysteresis must be between 0 and 0.2")
+        if minimum_journey_frames < 2:
+            raise ValueError("minimum journey frames must be at least 2")
         self.layout = layout
+        self.geometry = GateGeometry.from_layout(layout)
+        if self.geometry.inside_gate - self.geometry.outside_gate <= (
+            gate_hysteresis * 2
+        ):
+            raise ValueError("gate hysteresis leaves no usable transition span")
+        self.minimum_zone_frames = minimum_zone_frames
         self.maximum_gap_frames = maximum_gap_frames
         self.event_cooldown_frames = event_cooldown_frames
-        self._machines = {
-            anchor: CrossingStateMachine(
-                minimum_zone_frames=minimum_zone_frames,
-                maximum_gap_frames=maximum_gap_frames,
-            )
-            for anchor in self.ANCHORS
-        }
-        self._last_observations: dict[
-            str, dict[int, _AnchorObservation]
-        ] = {anchor: {} for anchor in self.ANCHORS}
+        self.minimum_direction_consistency = minimum_direction_consistency
+        self.gate_hysteresis = gate_hysteresis
+        self.minimum_journey_frames = minimum_journey_frames
+        self._tracks: dict[int, _GateTrackState] = {}
         self._last_events: dict[int, tuple[int, str]] = {}
-        self._suppressed_duplicates = 0
-        self._conflicting_anchor_events = 0
-        self._geometric_door_bridges = 0
+        self._decisions: list[TrajectoryDecision] = []
+        self._confirmed_events = 0
+        self._gap_resets = 0
+        self._reversed_journeys = 0
+        self._inconsistent_rejections = 0
+        self._insufficient_observation_rejections = 0
+        self._cooldown_suppressed = 0
         self._prediction_observations_ignored = 0
 
     @property
     def summary(self) -> dict[str, int]:
         return {
-            "suppressed_duplicate_events": self._suppressed_duplicates,
-            "conflicting_anchor_events": self._conflicting_anchor_events,
-            "geometric_door_bridges": self._geometric_door_bridges,
+            "confirmed_events": self._confirmed_events,
+            "gap_resets": self._gap_resets,
+            "reversed_journeys": self._reversed_journeys,
+            "inconsistent_direction_rejections": self._inconsistent_rejections,
+            "insufficient_observation_rejections": (
+                self._insufficient_observation_rejections
+            ),
+            "event_cooldown_suppressed": self._cooldown_suppressed,
             "prediction_observations_ignored": (
                 self._prediction_observations_ignored
             ),
         }
 
-    def anchor_zones(
-        self, track: TrackedDetection, frame_shape: tuple[int, ...]
-    ) -> dict[str, Zone]:
-        return {
-            anchor: self.layout.classify(track.anchor_for(anchor), frame_shape)
-            for anchor in self.ANCHORS
-        }
-
     def display_zone(
         self, track: TrackedDetection, frame_shape: tuple[int, ...]
     ) -> Zone:
-        zones = tuple(self.anchor_zones(track, frame_shape).values())
-        if Zone.DOOR in zones:
-            return Zone.DOOR
-        known = tuple(zone for zone in zones if zone is not Zone.UNKNOWN)
-        if not known:
-            return Zone.UNKNOWN
-        if len(set(known)) == 1:
-            return known[0]
-        # A tall box spanning both endpoints is visually in the transition.
-        return Zone.DOOR
+        return self.layout.classify(track.center, frame_shape)
 
     def observe(
         self,
@@ -415,68 +410,194 @@ class DualAnchorCrossingCounter:
     ) -> CrossingEvent | None:
         if bool(track.metadata.get("prediction_only")):
             self._prediction_observations_ignored += 1
-            return None
-
-        candidates: list[CrossingEvent] = []
-        for anchor, zone in self.anchor_zones(track, frame_shape).items():
-            point = track.anchor_for(anchor)
-            previous = self._last_observations[anchor].get(track.tracking_id)
-            bridged_door = self._can_bridge_door(
-                previous,
-                point,
-                zone,
+            self._record(
                 frame_number,
-                frame_shape,
+                track.tracking_id,
+                "ignored",
+                "prediction_only",
             )
-            if bridged_door:
-                self._geometric_door_bridges += 1
-            event = self._machines[anchor].observe(
-                track_id=track.tracking_id,
-                zone=zone,
-                frame_number=frame_number,
-                confidence=track.confidence,
-                bridged_door=bridged_door,
-            )
-            self._last_observations[anchor][track.tracking_id] = _AnchorObservation(
-                point=point,
-                zone=zone,
-                frame_number=frame_number,
-            )
-            if event is not None:
-                candidates.append(event)
-
-        if not candidates:
-            return None
-        if len({event.direction for event in candidates}) > 1:
-            self._conflicting_anchor_events += len(candidates)
             return None
 
-        last_event = self._last_events.get(track.tracking_id)
-        if (
-            last_event is not None
-            and candidates[0].direction == last_event[1]
-            and frame_number - last_event[0] <= self.event_cooldown_frames
-        ):
-            self._suppressed_duplicates += len(candidates)
+        track_id = track.tracking_id
+        progress = self.geometry.progress(track.center, frame_shape)
+        confidence = max(0.0, min(1.0, track.confidence))
+        state = self._tracks.get(track_id)
+        if state is None or frame_number - state.last_seen > self.maximum_gap_frames:
+            if state is not None:
+                self._gap_resets += 1
+                self._record(
+                    frame_number,
+                    track_id,
+                    "journey_reset",
+                    "tracking_gap",
+                    progress,
+                    origin=state.origin,
+                )
+            state = _GateTrackState(last_seen=frame_number)
+            self._tracks[track_id] = state
+        state.last_seen = frame_number
+        endpoint = self._endpoint(progress)
+
+        if state.origin is Zone.UNKNOWN:
+            self._observe_origin_candidate(
+                state,
+                endpoint,
+                frame_number,
+                progress,
+                confidence,
+                track_id,
+            )
             return None
 
-        chosen = max(
-            candidates,
-            key=lambda event: (event.confidence, event.dwell_frames),
+        state.samples.append((frame_number, progress, confidence))
+        direction = "IN" if state.origin is Zone.OUTSIDE else "OUT"
+        destination = Zone.INSIDE if direction == "IN" else Zone.OUTSIDE
+        expected_sign = 1 if direction == "IN" else -1
+        first_gate = (
+            self.geometry.outside_gate + self.gate_hysteresis
+            if direction == "IN"
+            else self.geometry.inside_gate - self.gate_hysteresis
         )
-        self._suppressed_duplicates += max(0, len(candidates) - 1)
-        self._last_events[track.tracking_id] = (frame_number, chosen.direction)
-        return chosen
+        crossed_first = (
+            progress >= first_gate if direction == "IN" else progress <= first_gate
+        )
+        if crossed_first and not state.first_gate_crossed:
+            state.first_gate_crossed = True
+            self._record(
+                frame_number,
+                track_id,
+                "gate_crossed",
+                "first_gate",
+                progress,
+                direction,
+                state.origin,
+            )
+
+        if endpoint is state.origin:
+            state.origin_return_frames += 1
+            state.destination_frames = 0
+            if (
+                state.first_gate_crossed
+                and state.origin_return_frames >= self.minimum_zone_frames
+            ):
+                self._reversed_journeys += 1
+                consistency = self._direction_consistency(
+                    state.samples, expected_sign
+                )
+                self._record(
+                    frame_number,
+                    track_id,
+                    "journey_rejected",
+                    "returned_to_origin",
+                    progress,
+                    direction,
+                    state.origin,
+                    consistency,
+                )
+                self._begin_journey(
+                    state, state.origin, frame_number, progress, confidence
+                )
+            elif not state.first_gate_crossed:
+                self._begin_journey(
+                    state, state.origin, frame_number, progress, confidence
+                )
+            return None
+        state.origin_return_frames = 0
+
+        state.destination_frames = (
+            state.destination_frames + 1 if endpoint is destination else 0
+        )
+        if state.destination_frames < self.minimum_zone_frames:
+            return None
+
+        consistency = self._direction_consistency(state.samples, expected_sign)
+        journey_frames = frame_number - state.origin_frame + 1
+        rejection_reason: str | None = None
+        if not state.first_gate_crossed:
+            rejection_reason = "gate_sequence_missing"
+        elif journey_frames < self.minimum_journey_frames:
+            rejection_reason = "insufficient_real_observations"
+        elif consistency < self.minimum_direction_consistency:
+            rejection_reason = "inconsistent_direction"
+
+        if rejection_reason is not None:
+            if rejection_reason == "inconsistent_direction":
+                self._inconsistent_rejections += 1
+            else:
+                self._insufficient_observation_rejections += 1
+            self._record(
+                frame_number,
+                track_id,
+                "journey_rejected",
+                rejection_reason,
+                progress,
+                direction,
+                state.origin,
+                consistency,
+            )
+            self._begin_journey(
+                state, destination, frame_number, progress, confidence
+            )
+            return None
+
+        previous_event = self._last_events.get(track_id)
+        if (
+            previous_event is not None
+            and frame_number - previous_event[0] <= self.event_cooldown_frames
+        ):
+            self._cooldown_suppressed += 1
+            self._record(
+                frame_number,
+                track_id,
+                "journey_rejected",
+                "event_cooldown",
+                progress,
+                direction,
+                state.origin,
+                consistency,
+            )
+            self._begin_journey(
+                state, destination, frame_number, progress, confidence
+            )
+            return None
+
+        origin = state.origin
+        event = CrossingEvent(
+            track_id=track_id,
+            direction=direction,
+            frame_number=frame_number,
+            confidence=sum(sample[2] for sample in state.samples) / len(state.samples),
+            dwell_frames=journey_frames,
+            path=(origin, Zone.DOOR, destination),
+        )
+        self._confirmed_events += 1
+        self._last_events[track_id] = (frame_number, direction)
+        self._record(
+            frame_number,
+            track_id,
+            "event_confirmed",
+            "two_gates_monotonic",
+            progress,
+            direction,
+            origin,
+            consistency,
+        )
+        self._begin_journey(state, destination, frame_number, progress, confidence)
+        return event
 
     def expire(self, frame_number: int) -> None:
-        for machine in self._machines.values():
-            machine.expire(frame_number)
-        for anchor, observations in self._last_observations.items():
-            self._last_observations[anchor] = {
-                track_id: observation
-                for track_id, observation in observations.items()
-                if frame_number - observation.frame_number <= self.maximum_gap_frames
-            }
+        for track_id, state in tuple(self._tracks.items()):
+            if frame_number - state.last_seen <= self.maximum_gap_frames:
+                continue
+            self._gap_resets += 1
+            self._record(
+                frame_number,
+                track_id,
+                "journey_reset",
+                "track_expired",
+                origin=state.origin,
+            )
+            del self._tracks[track_id]
         retention = max(self.maximum_gap_frames, self.event_cooldown_frames) * 2 + 1
         self._last_events = {
             track_id: event
@@ -484,34 +605,113 @@ class DualAnchorCrossingCounter:
             if frame_number - event[0] <= retention
         }
 
+    def drain_decisions(self) -> tuple[TrajectoryDecision, ...]:
+        decisions = tuple(self._decisions)
+        self._decisions.clear()
+        return decisions
+
     def reset(self) -> None:
-        for machine in self._machines.values():
-            machine.reset()
-        for observations in self._last_observations.values():
-            observations.clear()
+        self._tracks.clear()
         self._last_events.clear()
-        self._suppressed_duplicates = 0
-        self._conflicting_anchor_events = 0
-        self._geometric_door_bridges = 0
+        self._decisions.clear()
+        self._confirmed_events = 0
+        self._gap_resets = 0
+        self._reversed_journeys = 0
+        self._inconsistent_rejections = 0
+        self._insufficient_observation_rejections = 0
+        self._cooldown_suppressed = 0
         self._prediction_observations_ignored = 0
 
-    def _can_bridge_door(
+    def _endpoint(self, progress: float) -> Zone:
+        if progress <= self.geometry.outside_gate - self.gate_hysteresis:
+            return Zone.OUTSIDE
+        if progress >= self.geometry.inside_gate + self.gate_hysteresis:
+            return Zone.INSIDE
+        return Zone.DOOR
+
+    def _observe_origin_candidate(
         self,
-        previous: _AnchorObservation | None,
-        point: tuple[float, float],
-        zone: Zone,
+        state: _GateTrackState,
+        endpoint: Zone,
         frame_number: int,
-        frame_shape: tuple[int, ...],
-    ) -> bool:
-        if previous is None:
-            return False
-        if frame_number - previous.frame_number > self.maximum_gap_frames:
-            return False
-        if {previous.zone, zone} != {Zone.OUTSIDE, Zone.INSIDE}:
-            return False
-        return self.layout.segment_crosses_zone(
-            previous.point,
-            point,
-            Zone.DOOR,
-            frame_shape,
+        progress: float,
+        confidence: float,
+        track_id: int,
+    ) -> None:
+        if endpoint not in {Zone.OUTSIDE, Zone.INSIDE}:
+            state.candidate_origin = Zone.UNKNOWN
+            state.candidate_frames = 0
+            return
+        if endpoint is state.candidate_origin:
+            state.candidate_frames += 1
+        else:
+            state.candidate_origin = endpoint
+            state.candidate_frames = 1
+        if state.candidate_frames < self.minimum_zone_frames:
+            return
+        self._begin_journey(state, endpoint, frame_number, progress, confidence)
+        self._record(
+            frame_number,
+            track_id,
+            "origin_confirmed",
+            "real_endpoint_dwell",
+            progress,
+            origin=endpoint,
+        )
+
+    @staticmethod
+    def _begin_journey(
+        state: _GateTrackState,
+        origin: Zone,
+        frame_number: int,
+        progress: float,
+        confidence: float,
+    ) -> None:
+        state.candidate_origin = origin
+        state.candidate_frames = 1
+        state.origin = origin
+        state.origin_frame = frame_number
+        state.first_gate_crossed = False
+        state.destination_frames = 0
+        state.origin_return_frames = 0
+        state.samples = [(frame_number, progress, confidence)]
+
+    def _direction_consistency(
+        self,
+        samples: list[tuple[int, float, float]],
+        expected_sign: int,
+    ) -> float:
+        threshold = max(1e-4, self.gate_hysteresis / 4)
+        deltas = [
+            current[1] - previous[1]
+            for previous, current in zip(samples, samples[1:], strict=False)
+            if abs(current[1] - previous[1]) >= threshold
+        ]
+        if not deltas:
+            return 0.0
+        matching = sum(1 for delta in deltas if delta * expected_sign > 0)
+        return matching / len(deltas)
+
+    def _record(
+        self,
+        frame_number: int,
+        track_id: int,
+        action: str,
+        reason: str,
+        progress: float | None = None,
+        direction: str | None = None,
+        origin: Zone | None = None,
+        direction_consistency: float | None = None,
+    ) -> None:
+        self._decisions.append(
+            TrajectoryDecision(
+                frame_number=frame_number,
+                track_id=track_id,
+                action=action,
+                reason=reason,
+                progress=progress,
+                direction=direction,
+                origin=origin,
+                direction_consistency=direction_consistency,
+            )
         )

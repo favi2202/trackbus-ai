@@ -47,7 +47,7 @@ The hosted gateway validates authenticated camera events and stores them
 idempotently in Cloudflare D1. View the newest stored records directly at:
 
 ```text
-https://trackbus-showcase.favi-2202.chatgpt.site/api/v1/events/passenger-counts?limit=50
+https://trackbus-showcase.favi.workers.dev/api/v1/events/passenger-counts?limit=50
 ```
 
 The Live pilot tab polls the same source every two seconds. Forecast, dispatch,
@@ -79,7 +79,7 @@ Send confirmed crossings to the hosted showcase (PowerShell):
 
 ```powershell
 $env:TRACKBUS_API_KEY="<camera ingestion key>"
-python showcase.py --camera 0 --api-url https://trackbus-showcase.favi-2202.chatgpt.site/api
+python showcase.py --camera 0 --api-url https://trackbus-showcase.favi.workers.dev/api
 ```
 
 On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
@@ -87,9 +87,12 @@ On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
 Useful overrides include `--model`, `--confidence`, `--detector-floor`, `--imgsz`,
 `--device`, `--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`,
 `--lock-on-gap-frames`, `--lock-on-distance`, `--event-cooldown-frames`,
+`--minimum-direction-consistency`, `--gate-hysteresis`, `--trajectory-log`,
 `--bus-id`, `--route-id`, `--stop-id`, and `--door-id`. Lock-on reconnects short
 anonymous-ID fragments and displays bounded visual predictions, but only real
-detections can confirm a crossing. Prefer the
+detections crossing both calibrated gates in one consistent direction can
+confirm a crossing. The JSONL trajectory log records frame-numbered confirmations
+and rejection reasons for labeled-video reconciliation. Prefer the
 `TRACKBUS_API_KEY` environment variable over `--api-key` so the key does not
 appear in shell history. The default zones are a safe presentation
 starting point; a real camera must be calibrated for its doorway geometry.

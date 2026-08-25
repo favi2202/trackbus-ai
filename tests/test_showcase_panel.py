@@ -9,6 +9,7 @@ from showcase import (
     RuntimeState,
     ShowcaseDiagnostics,
     _draw_panel,
+    _draw_zone_overlay,
     _event_row,
     _prepare_display_frame,
     build_parser,
@@ -17,6 +18,7 @@ from showcase import (
 )
 from trackbus.detection import Detection
 from trackbus.event_contract import vision_event
+from trackbus.showcase_zones import GateGeometry, ZoneLayout
 
 
 def _bounds(call: tuple[str, tuple[int, int], float, int]) -> tuple[int, int, int, int]:
@@ -159,6 +161,15 @@ def test_headless_source_keeps_original_resolution() -> None:
     assert scale == (1.0, 1.0)
 
 
+def test_zone_overlay_renders_the_two_derived_gates() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    layout = ZoneLayout.default()
+
+    _draw_zone_overlay(frame, layout, GateGeometry.from_layout(layout))
+
+    assert np.count_nonzero(frame) > 0
+
+
 def test_showcase_exposes_a_separate_detector_floor() -> None:
     args = build_parser().parse_args(
         [
@@ -180,7 +191,11 @@ def test_showcase_exposes_a_separate_detector_floor() -> None:
     assert args.lock_on_distance == pytest.approx(0.12)
     assert args.lock_on_minimum_iou == pytest.approx(0.02)
     assert args.lock_on_match_score == pytest.approx(0.50)
-    assert args.event_cooldown_frames == 45
+    assert args.event_cooldown_frames == 90
+    assert args.minimum_direction_consistency == pytest.approx(0.70)
+    assert args.gate_hysteresis == pytest.approx(0.03)
+    assert args.minimum_journey_frames == 3
+    assert args.trajectory_log.name == "showcase-trajectory.jsonl"
 
 
 @pytest.mark.parametrize("shape", [(720, 1280), (1080, 1920)])

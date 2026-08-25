@@ -1,7 +1,10 @@
+import pytest
+
 from trackbus.detection import TrackedDetection
 from trackbus.showcase_zones import (
     CrossingStateMachine,
-    DualAnchorCrossingCounter,
+    GateGeometry,
+    MonotonicGateCounter,
     Zone,
     ZoneLayout,
 )
@@ -123,8 +126,8 @@ def tracked_box(
     )
 
 
-def feed_dual(
-    counter: DualAnchorCrossingCounter,
+def feed_gates(
+    counter: MonotonicGateCounter,
     boxes: list[TrackedDetection],
     *,
     start: int = 1,
@@ -141,13 +144,21 @@ def feed_dual(
     return events
 
 
-def test_dual_anchors_share_one_event_latch() -> None:
-    counter = DualAnchorCrossingCounter(
+def test_default_gate_geometry_is_ordered_on_zone_axis() -> None:
+    geometry = GateGeometry.from_layout(ZoneLayout.default())
+
+    assert geometry.outside_gate == 0.25
+    assert geometry.inside_gate == 0.75
+    assert geometry.progress((50, 20), (101, 101, 3)) == pytest.approx(0)
+    assert geometry.progress((50, 80), (101, 101, 3)) == pytest.approx(1)
+
+
+def test_monotonic_center_crossing_emits_one_boarding() -> None:
+    counter = MonotonicGateCounter(
         ZoneLayout.default(),
         minimum_zone_frames=2,
-        event_cooldown_frames=45,
     )
-    events = feed_dual(
+    events = feed_gates(
         counter,
         [
             tracked_box(10, 20),
@@ -160,55 +171,82 @@ def test_dual_anchors_share_one_event_latch() -> None:
     )
 
     assert [event.direction for event in events] == ["IN"]
-    assert counter.summary["suppressed_duplicate_events"] == 1
+    assert counter.summary["confirmed_events"] == 1
+    decisions = counter.drain_decisions()
+    assert [decision.action for decision in decisions] == [
+        "origin_confirmed",
+        "gate_crossed",
+        "event_confirmed",
+    ]
+    assert decisions[-1].reason == "two_gates_monotonic"
+    assert decisions[-1].to_payload() == {
+        "recordType": "trajectory-decision",
+        "frameNumber": 6,
+        "trackId": "T7",
+        "action": "event_confirmed",
+        "reason": "two_gates_monotonic",
+        "progress": pytest.approx(1.013468),
+        "direction": "IN",
+        "origin": "outside",
+        "directionConsistency": 1.0,
+    }
 
 
-def test_shared_cooldown_suppresses_fast_same_track_recounts() -> None:
-    counter = DualAnchorCrossingCounter(
+def test_monotonic_center_crossing_emits_one_alighting() -> None:
+    counter = MonotonicGateCounter(
         ZoneLayout.default(),
-        minimum_zone_frames=1,
-        event_cooldown_frames=20,
+        minimum_zone_frames=2,
     )
-    events = feed_dual(
+    events = feed_gates(
         counter,
         [
-            tracked_box(10, 30),
-            tracked_box(40, 60),
-            tracked_box(55, 75),
-            tracked_box(75, 90),
-        ],
-    )
-
-    assert [event.direction for event in events] == ["IN"]
-    assert counter.summary["suppressed_duplicate_events"] == 1
-
-
-def test_shared_cooldown_allows_a_real_opposite_direction_crossing() -> None:
-    counter = DualAnchorCrossingCounter(
-        ZoneLayout.default(),
-        minimum_zone_frames=1,
-        event_cooldown_frames=20,
-    )
-    events = feed_dual(
-        counter,
-        [
-            tracked_box(10, 20),
-            tracked_box(45, 55),
+            tracked_box(75, 85),
             tracked_box(75, 85),
             tracked_box(45, 55),
+            tracked_box(45, 55),
+            tracked_box(10, 20),
             tracked_box(10, 20),
         ],
     )
 
-    assert [event.direction for event in events] == ["IN", "OUT"]
+    assert [event.direction for event in events] == ["OUT"]
+
+
+def test_direction_inconsistency_rejects_a_blinking_path() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=2,
+        minimum_direction_consistency=0.70,
+    )
+    events = feed_gates(
+        counter,
+        [
+            tracked_box(10, 20),
+            tracked_box(10, 20),
+            tracked_box(45, 55),
+            tracked_box(20, 30),
+            tracked_box(75, 85),
+            tracked_box(75, 85),
+        ],
+    )
+
+    assert events == []
+    assert counter.summary["inconsistent_direction_rejections"] == 1
+    rejected = [
+        decision
+        for decision in counter.drain_decisions()
+        if decision.action == "journey_rejected"
+    ]
+    assert rejected[-1].reason == "inconsistent_direction"
+    assert rejected[-1].direction_consistency < 0.70
 
 
 def test_prediction_only_track_cannot_create_crossing_event() -> None:
-    counter = DualAnchorCrossingCounter(
+    counter = MonotonicGateCounter(
         ZoneLayout.default(),
         minimum_zone_frames=1,
     )
-    events = feed_dual(
+    events = feed_gates(
         counter,
         [
             tracked_box(10, 20, prediction_only=True),
@@ -221,13 +259,13 @@ def test_prediction_only_track_cannot_create_crossing_event() -> None:
     assert counter.summary["prediction_observations_ignored"] == 3
 
 
-def test_real_endpoints_can_bridge_door_during_short_detection_gap() -> None:
-    counter = DualAnchorCrossingCounter(
+def test_real_endpoint_jump_can_count_without_fabricated_door_observation() -> None:
+    counter = MonotonicGateCounter(
         ZoneLayout.default(),
         minimum_zone_frames=2,
         maximum_gap_frames=8,
     )
-    events = feed_dual(
+    events = feed_gates(
         counter,
         [
             tracked_box(10, 20),
@@ -238,4 +276,106 @@ def test_real_endpoints_can_bridge_door_during_short_detection_gap() -> None:
     )
 
     assert [event.direction for event in events] == ["IN"]
-    assert counter.summary["geometric_door_bridges"] == 2
+    reasons = [decision.reason for decision in counter.drain_decisions()]
+    assert "two_gates_monotonic" in reasons
+    assert "geometric_door_bridge" not in reasons
+
+
+def test_return_to_origin_is_rejected_and_audited() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=2,
+    )
+    events = feed_gates(
+        counter,
+        [
+            tracked_box(10, 20),
+            tracked_box(10, 20),
+            tracked_box(45, 55),
+            tracked_box(10, 20),
+            tracked_box(10, 20),
+        ],
+    )
+
+    assert events == []
+    assert counter.summary["reversed_journeys"] == 1
+    assert "returned_to_origin" in {
+        decision.reason for decision in counter.drain_decisions()
+    }
+
+
+def test_cooldown_blocks_an_implausibly_fast_reverse_event() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=2,
+        event_cooldown_frames=90,
+    )
+    events = feed_gates(
+        counter,
+        [
+            tracked_box(10, 20),
+            tracked_box(10, 20),
+            tracked_box(45, 55),
+            tracked_box(75, 85),
+            tracked_box(75, 85),
+            tracked_box(45, 55),
+            tracked_box(10, 20),
+            tracked_box(10, 20),
+        ],
+    )
+
+    assert [event.direction for event in events] == ["IN"]
+    assert counter.summary["event_cooldown_suppressed"] == 1
+    assert "event_cooldown" in {
+        decision.reason for decision in counter.drain_decisions()
+    }
+
+
+def test_tracking_gap_resets_gate_journey() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=1,
+        maximum_gap_frames=3,
+    )
+    feed_gates(
+        counter,
+        [tracked_box(10, 20), tracked_box(45, 55)],
+        start=1,
+    )
+    events = feed_gates(counter, [tracked_box(75, 85)], start=10)
+
+    assert events == []
+    assert counter.summary["gap_resets"] == 1
+    assert "tracking_gap" in {
+        decision.reason for decision in counter.drain_decisions()
+    }
+
+
+def test_expired_track_is_recorded_before_id_state_is_removed() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=1,
+        maximum_gap_frames=3,
+    )
+    feed_gates(counter, [tracked_box(10, 20)], start=1)
+
+    counter.expire(5)
+
+    assert counter.summary["gap_resets"] == 1
+    assert "track_expired" in {
+        decision.reason for decision in counter.drain_decisions()
+    }
+
+
+def test_tall_static_box_does_not_create_two_anchor_false_event() -> None:
+    counter = MonotonicGateCounter(
+        ZoneLayout.default(),
+        minimum_zone_frames=1,
+    )
+    events = feed_gates(
+        counter,
+        [tracked_box(10, 90) for _ in range(8)],
+    )
+
+    assert events == []
+    assert counter.summary["confirmed_events"] == 0
