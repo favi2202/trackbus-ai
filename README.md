@@ -1,72 +1,95 @@
 # TrackBus AI
 
-TrackBus is a vendor-neutral transport-intelligence platform for Tashkent. It
-normalizes anonymous passenger-count events from approved APC sensors, optional
-TrackBus Vision cameras, payments, manual corrections, and imports into current
-occupancy, demand forecasts, and auditable operator recommendations.
+**AI-powered transport intelligence for public transportation**
 
-> The dashboard's Live pilot tab shows stored camera events. Forecast and
-> dispatch scenarios remain clearly labeled synthetic demonstrations, not
-> production accuracy claims. Vision uses temporary anonymous track IDs,
-> performs no facial recognition, and keeps raw video on the edge by default.
+TrackBus is an MVP-stage transport-intelligence platform designed to help public-transport operators understand **passenger flow, vehicle occupancy, crowding, demand and operational imbalance**.
 
-## What works now
+TrackBus is not limited to one camera system. It is designed to work with infrastructure an operator already has — such as **APC sensors, existing bus CCTV, GPS and historical operational data** — and add TrackBus Vision only where it is useful.
 
-- Live Pilot operator dashboard with D1-backed source health, current bus
-  occupancy, recent JSON events, reconciliation, and two-second refresh;
-- vendor-neutral passenger-count contract and durable idempotent analytics API;
-- real Ultralytics YOLO + ByteTrack Vision pipeline and v0.2.1 calibration,
-  diagnostics, and evaluation tools;
-- explicit `OUTSIDE -> DOOR -> INSIDE` / reverse crossing state machine;
-- webcam, video, and discoverable demo-footage modes in `showcase.py`;
-- API delivery with retry-safe disk queue when connectivity is unavailable;
-- forecasting, quality, replay, web, API, Vision, and trajectory tests.
+> **Current status:** MVP / research prototype. The integrated dashboard, backend/API foundation, forecasting baseline, passenger beta and computer-vision pipeline are now available directly on `main`. TrackBus has **not yet been validated as a production passenger-counting system on representative Tashkent bus footage**, and no 90%+ production accuracy claim is made.
 
-## Repository map
+**Languages:** [English](#english) · [O‘zbekcha](#ozbekcha)
 
-```text
-app/                       Hosted showcase and gateway API
-components/                Operator, pilot proof, and passenger interface
-contracts/                 Canonical vendor-neutral event schema
-services/analytics-api/    Durable ingestion, quality, and operations API
-trackbus/                   Vision detection, tracking, counting, and evaluation
-showcase.py                 Executable camera/video presentation demo
-configs/                    Vision, calibration, tracker, and experiment settings
-tools/                      Sensor replay utilities
-docs/                       Architecture, pilot, privacy, and showcase guides
-```
+---
 
-## Hosted showcase
+# English
 
-```bash
-npm ci
-npm run dev
-```
+## What problem does TrackBus solve?
 
-The hosted gateway validates authenticated camera events and stores them
-idempotently in Cloudflare D1. View the newest stored records directly at:
+Passenger demand and available fleet capacity do not always match.
+
+One bus can be overcrowded while the next vehicle on the same route is mostly empty. Other trips may repeatedly operate far below useful capacity. Operators may already collect valuable information through APC, CCTV, GPS or payment systems, but those signals can remain fragmented across separate systems.
+
+TrackBus aims to turn those signals into a clearer operational picture:
+
+- How full is each bus?
+- Where do passengers board and leave?
+- Where and when does overcrowding repeatedly occur?
+- Which route segments are repeatedly under-utilized?
+- Are buses badly spaced, with one overloaded and the next mostly empty?
+- How crowded may an approaching bus be when it reaches a passenger's stop?
+- Which changes should be investigated: timetable, headway, dispatching, vehicle size or route allocation?
+
+The goal is **not simply to count people**. The goal is to turn passenger-flow data into useful transport decisions.
+
+## Platform architecture
 
 ```text
-https://trackbus-showcase.favi.workers.dev/api/v1/events/passenger-counts?limit=50
+Existing APC / CCTV / TrackBus Vision / GPS / historical data
+                           ↓
+                  normalized events
+                           ↓
+                     TrackBus API
+                           ↓
+             occupancy + quality checks
+                           ↓
+            analytics + forecast baseline
+                           ↓
+       operator dashboard + passenger view
 ```
 
-The Live pilot tab polls the same source every two seconds. Forecast, dispatch,
-and passenger-app scenarios remain labeled synthetic.
+Historical payment data can later be used as an additional demand signal when access is available. Real-time payment integration is a future option and is not required for the current MVP.
 
-For a separate free `workers.dev` deployment, follow the
-[Cloudflare Workers deployment guide](docs/cloudflare-deployment.md).
+## What works now?
 
-## Real Vision showcase
+`main` now contains the integrated TrackBus foundation, including:
 
-Install Python 3.11+ dependencies:
+- operator / Live Pilot dashboard;
+- current vehicle occupancy and source-health views;
+- canonical passenger-count JSON contracts;
+- durable idempotent API ingestion and persistence;
+- TrackBus Vision based on Ultralytics YOLO + ByteTrack;
+- configurable camera calibration and crossing geometry;
+- webcam, local-video and demo showcase modes;
+- offline event queuing when network connectivity is unavailable;
+- transparent baseline occupancy forecasting;
+- passenger-facing crowding / forecast beta UI;
+- detector, tracking, counting, quality, API and web tests;
+- architecture, privacy, pilot, deployment and evaluation documentation.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-python -m pip install -e '.[dev]'
+## TrackBus Vision
+
+TrackBus Vision performs **person detection and temporary anonymous tracking**. It does not perform facial recognition.
+
+```text
+Camera frame
+   ↓
+YOLO person detection
+   ↓
+ByteTrack temporary track IDs
+   ↓
+trajectory + calibrated doorway geometry
+   ↓
+confirmed directional crossing
+   ↓
+IN / OUT event
+   ↓
+JSON → API / database / dashboard
 ```
 
-Run a source:
+Temporary IDs exist only to follow motion during the local processing session. They are not passenger identities.
+
+Run the presentation pipeline with:
 
 ```bash
 python showcase.py --camera 0
@@ -75,124 +98,280 @@ python showcase.py --demo
 python showcase.py --calibrate --camera 0
 ```
 
-Send confirmed crossings to the hosted showcase (PowerShell):
+The current showcase uses calibrated directional gates / zones and conservative event logic. A real camera must be calibrated for its own doorway geometry.
 
-```powershell
-$env:TRACKBUS_API_KEY="<camera ingestion key>"
-python showcase.py --camera 0 --api-url https://trackbus-showcase.favi.workers.dev/api
+## Existing hardware first
+
+TrackBus follows an **existing-infrastructure-first** approach:
+
+1. If usable APC already exists, integrate it.
+2. If bus CCTV already exists, evaluate it before installing new cameras.
+3. Calibrate suitable existing CCTV to the doorway geometry.
+4. Recommend dedicated TrackBus cameras only when existing footage cannot provide acceptable results.
+
+TrackBus should support reasonable overhead, angled and side-view camera positions through per-camera calibration. Software cannot recover information that was never captured, so extreme blur, permanent occlusion, very small subjects or poor night footage may still require better camera placement.
+
+## Edge AI vs server AI
+
+The pilot must determine where vision inference should run.
+
+### On-bus / edge processing
+
+```text
+Camera → edge computer → IN/OUT event → small JSON → mobile network → server
 ```
 
-On macOS or Linux, use `export TRACKBUS_API_KEY="<camera ingestion key>"`.
+Advantages: low bandwidth, raw video can stay local, counting can continue during network loss.
 
-Useful overrides include `--model`, `--confidence`, `--detector-floor`, `--imgsz`,
-`--device`, `--frame-skip`, `--tracker`, `--zones`, `--api-url`, `--api-key`,
-`--lock-on-gap-frames`, `--lock-on-distance`, `--event-cooldown-frames`,
-`--minimum-direction-consistency`, `--gate-hysteresis`, `--trajectory-log`,
-`--bus-id`, `--route-id`, `--stop-id`, and `--door-id`. Lock-on reconnects short
-anonymous-ID fragments and displays bounded visual predictions, but only real
-detections crossing both calibrated gates in one consistent direction can
-confirm a crossing. The JSONL trajectory log records frame-numbered confirmations
-and rejection reasons for labeled-video reconciliation. Prefer the
-`TRACKBUS_API_KEY` environment variable over `--api-key` so the key does not
-appear in shell history. The default zones are a safe presentation
-starting point; a real camera must be calibrated for its doorway geometry.
+### Central-server processing
 
-Keyboard controls:
-
-| Key | Action |
-| --- | --- |
-| `Space` | Pause or resume |
-| `F` | Toggle fullscreen |
-| `O` | Toggle the information overlay |
-| `R` | Reset counters after confirmation |
-| `C` / `Z` | Show the auditable `--calibrate` command |
-| `S` | Save a screenshot |
-| `E` | Export the current event log to CSV |
-| `Q` / `Esc` | Quit |
-
-If the API is offline, canonical events are retained under
-`data/offline-queue/` and retried without changing their event IDs. A missing
-demo video exits with discovery instructions instead of opening an empty window.
-
-## Measure Vision recognition
-
-Separate YOLO detection quality from ByteTrack and IN/OUT logic before tuning:
-
-```powershell
-python -m trackbus.benchmark_detection `
-  --video test_video.mp4 `
-  --model yolo11s.pt `
-  --imgsz 960 `
-  --detector-floor 0.10
-
-python -m trackbus.sweep_detection `
-  --video test_video.mp4 `
-  --matrix configs/detection_sweep.yaml `
-  --output-dir data/experiments/detection-sweep
+```text
+Camera → mobile network → central GPU/server → Vision → events
 ```
 
-Without box-level person annotations these commands report detection coverage,
-confidence, zero-detection gaps, edge clipping, stability proxies, FPS, and
-latency—but deliberately do not claim precision, recall, F1, or a best accuracy
-configuration. See the [detector benchmark guide](docs/detection-benchmark.md)
-and [failure audit](docs/vision-failure-audit.md). Optional `low_light` and
-`contrast` preprocessing profiles are bounded, same-size experiments and stay
-off by default.
+Advantages: centralized compute and model updates, but much higher bandwidth and network dependency.
 
-Combine completed detector, pipeline, and event-evaluation artifacts without
-mixing metric meanings:
+The correct architecture should be selected after measuring actual bus LTE/4G/5G coverage, upload stability, latency, dead zones and hardware requirements.
 
-```powershell
-python -m trackbus.benchmark_report `
-  --detection data/experiments/detector/benchmark.json `
-  --processing data/output/processing-summary.json `
-  --counting data/output/counting-evaluation.json `
-  --output data/experiments/separated-report.json
+## Forecasting
+
+TrackBus already contains a **transparent baseline forecast**. It is not yet a trained production ML demand model.
+
+The current baseline uses recent occupancy and contextual factors such as time of day, weekday/weekend, weather and nearby events. Future ML models should be trained on real operational data and promoted only if they measurably outperform the baseline.
+
+A useful passenger-facing result is therefore not only:
+
+> `Occupancy: 72%`
+
+but eventually:
+
+> **Moderate now — expected to be crowded when it reaches your stop.**
+
+## Passenger beta
+
+The passenger interface translates occupancy into simple crowding levels:
+
+- 🟢 Plenty of space
+- 🟢 Seats likely available
+- 🟡 Moderate
+- 🟠 Crowded
+- 🔴 Very crowded / Full
+
+Passengers can also provide optional one-tap crowd reports. Community reports are a supporting signal and should never allow one user to overwrite automated occupancy by themselves.
+
+## Validation
+
+TrackBus separates three different problems:
+
+1. **Detection:** did YOLO see the person?
+2. **Tracking:** did the same person keep a consistent temporary track?
+3. **Counting:** did the system emit the correct IN/OUT event?
+
+Validation should use:
+
+- manually annotated video events;
+- controlled boarding/alighting tests;
+- existing APC comparison where available;
+- end-of-route / verified-empty reconciliation;
+- day, night, crowded and normal-condition evaluation;
+- optional driver crowd-level reference labels while stationary.
+
+A detector metric such as mAP must not be presented as passenger-counting accuracy.
+
+## Privacy and safety
+
+TrackBus is designed for anonymous passenger flow:
+
+- no facial recognition;
+- no biometric identification;
+- no cross-journey re-identification;
+- temporary video-local IDs only;
+- raw video stays on the edge by default for edge inference;
+- the backend focuses on counts, events and system health;
+- TrackBus does not control brakes, steering or other safety-critical vehicle systems.
+
+## Next pilot step
+
+### If existing footage is available
+
+Request a small privacy-approved sample of representative APC/CCTV data, calibrate it, create manual ground truth, benchmark the current system and determine whether the existing hardware is sufficient.
+
+### If suitable footage is not available
+
+Run a small controlled pilot on roughly two buses to collect representative footage and measure real network conditions. Use that evidence to decide camera placement, edge-vs-server inference and final hardware requirements.
+
+A working two-bus technical pilot has been estimated at roughly **50–80 million UZS**, with about **70 million UZS** as a planning figure. This is an internal estimate, not a vendor quote.
+
+## Repository map
+
+```text
+app/                       Web showcase and gateway API
+components/                Operator dashboard and passenger beta
+contracts/                 Canonical passenger-count event schema
+services/analytics-api/    Durable ingestion, quality and operations API
+trackbus/                   Vision detection, tracking, counting and evaluation
+showcase.py                 Executable webcam/video demonstration
+configs/                    Camera, tracking and experiment configuration
+tools/                      Replay and support utilities
+docs/                       Architecture, pilot, privacy and evaluation guides
 ```
 
-The JSON and CSV outputs label every non-ground-truth section as diagnostics,
-not accuracy. See the [separated benchmark guide](docs/separated-benchmark.md).
+## Branch guide
 
-After establishing a detector baseline, compare the bounded ByteTrack profiles
-in `configs/tracking_fast.yaml`, `configs/tracking_balanced.yaml`, and
-`configs/tracking_occlusion.yaml`. TrackBus also provides an experimental,
-off-by-default short-gap continuity layer for conservative local ID stitching.
-See the [tracking continuity guide](docs/tracking-continuity.md) before enabling
-it on a camera.
+| Branch | Purpose | Status |
+| --- | --- | --- |
+| [`main`](https://github.com/favi2202/trackbus-ai/tree/main) | Integrated TrackBus MVP: web app, API, Vision, forecasting, passenger beta, tests and docs | **Primary branch / start here** |
+| [`agent/trackbus-foundation`](https://github.com/favi2202/trackbus-ai/tree/agent/trackbus-foundation) | Development history of the integrated platform foundation that was merged into `main` | Historical / reference |
+| [`feature/trackbus-v0.2.1-event-stability`](https://github.com/favi2202/trackbus-ai/tree/feature/trackbus-v0.2.1-event-stability) | Focused CV event-stability, calibration and evaluation research | Research branch |
+| [`feature/trackbus-v0.2-multiview`](https://github.com/favi2202/trackbus-ai/tree/feature/trackbus-v0.2-multiview) | Multi-view detection/fusion experiment | Research branch |
+| [`feature/trackbus-v0.1.2`](https://github.com/favi2202/trackbus-ai/tree/feature/trackbus-v0.1.2) | Earlier single-camera YOLO + ByteTrack prototype | Historical CV baseline |
+| [`develop`](https://github.com/favi2202/trackbus-ai/tree/develop) | Original project scaffold and early roadmap | Historical |
 
-Before the next representative video test, run the bounded camera-quality
-analyzer and, when necessary, enable metadata-only failure mining. TrackBus now
-passes detections from a separate `model.detector_floor` to ByteTrack so weak
-observations may preserve an existing anonymous track without starting a new
-one. See the
-[vision readiness diagnostics guide](docs/vision-readiness-diagnostics.md).
+The repository's verified initial commit is dated **2026-07-01 07:30:04 UTC** (`b6e2232...`).
 
-```powershell
-python -m trackbus.camera_quality `
-  --source ".\videos\bus-test.mp4" `
-  --config ".\configs\default.yaml" `
-  --output ".\data\output\bus-test.camera-quality.json"
+## Quick start
+
+### Web
+
+```bash
+npm ci
+npm run dev
 ```
 
-## Verification
+### Python Vision
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -e '.[dev]'
+python showcase.py --camera 0
+```
+
+### Verification
 
 ```bash
 npm run lint
 npm test
-
-cd services/analytics-api
-python -m pip install -e '.[dev]'
-ruff check src tests
-pytest -q
-
-cd ../..
 python -m pytest -q
-PYTHONPATH=tools python -m unittest discover -s tools/tests -v
-python showcase.py --help
 ```
 
-See [the showcase guide](docs/showcase.md), [architecture](docs/architecture.md),
-[privacy boundaries](docs/privacy-and-safety.md), and
-[pilot runbook](docs/pilot-runbook.md) before field use. For a future local
-training dataset, begin with the privacy-conscious
-[dataset preparation workflow](docs/dataset-preparation.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/showcase.md`](docs/showcase.md), [`docs/privacy-and-safety.md`](docs/privacy-and-safety.md), [`docs/detection-benchmark.md`](docs/detection-benchmark.md) and [`docs/pilot-runbook.md`](docs/pilot-runbook.md) for details.
+
+---
+
+# O‘zbekcha
+
+## TrackBus nima?
+
+**TrackBus — jamoat transporti uchun AI asosidagi transport-intelligence platformasi.** U operatorlarga yo‘lovchi oqimi, avtobus bandligi, talab va transport taqsimotidagi nomutanosiblikni tushunishga yordam berish uchun yaratilmoqda.
+
+TrackBus faqat kamera bilan odam sanash tizimi emas. Platforma mavjud **APC, avtobus CCTV kameralari, GPS va tarixiy operatsion ma'lumotlardan** foydalanishi va TrackBus Vision'ni faqat kerak bo‘lgan joyda qo‘shishi mumkin.
+
+> **Hozirgi holat:** MVP / tadqiqot prototipi. Integratsiyalashgan dashboard, API/backend asoslari, forecast baseline, passenger beta va computer-vision pipeline `main` branch ichida mavjud. TrackBus hali real Toshkent avtobuslarida production darajasida validatsiya qilinmagan va 90%+ aniqlik da'vosi qilinmaydi.
+
+## Muammo
+
+Bir avtobus haddan tashqari band bo‘lib, uning ortidan kelayotgan avtobus deyarli bo‘sh bo‘lishi mumkin. Boshqa qatnovlar esa yo‘nalishning katta qismida juda kam yo‘lovchi bilan yurishi mumkin.
+
+Operatorlarda APC, CCTV, GPS yoki to‘lov tizimlaridan ma'lumot bo‘lishi mumkin, lekin ular alohida tizimlarda qolib ketishi mumkin. TrackBusning vazifasi — bu ma'lumotlarni operatsion qaror uchun foydali ko‘rinishga aylantirish.
+
+## TrackBus Vision qanday ishlaydi?
+
+```text
+Kamera
+  ↓
+YOLO — odamni aniqlash
+  ↓
+ByteTrack — vaqtinchalik anonim ID
+  ↓
+kalibrlangan yo‘nalish / trajectory
+  ↓
+IN yoki OUT hodisasi
+  ↓
+JSON → API → database → dashboard
+```
+
+Yuzni tanish yo‘q. Doimiy yo‘lovchi identifikatori yo‘q.
+
+## Mavjud uskunadan foydalanish birinchi o‘rinda
+
+TrackBusning pilot tamoyili:
+
+1. APC mavjud bo‘lsa — avval uni ishlatish.
+2. CCTV mavjud bo‘lsa — avval o‘sha kamerani tekshirish.
+3. Mos kamera bo‘lsa — uni kalibrlash va qayta ishlatish.
+4. Faqat mavjud kamera yetarli bo‘lmasa — yangi kamera taklif qilish.
+
+Kamera aynan eshikning tepasida bo‘lishi shart emas. Turli burchaklar uchun alohida kalibrovka qilinishi mumkin.
+
+## Edge yoki server?
+
+Agar avtobusdagi mobil internet zaif bo‘lsa, eng mantiqiy arxitektura:
+
+```text
+Kamera → avtobusdagi edge AI → sanash → kichik JSON → server
+```
+
+Internet vaqtincha uzilsa ham sanash davom etadi va eventlar keyin sinxronlanadi.
+
+Agar tarmoq yetarlicha kuchli bo‘lsa, markaziy serverda video qayta ishlash varianti ham sinovdan o‘tkazilishi mumkin. Yakuniy qaror real avtobus tarmog‘i o‘lchangandan keyin qabul qilinadi.
+
+## Forecasting
+
+Hozir TrackBusda ishlaydigan **oddiy va tushunarli baseline forecast** mavjud. Bu hali real transport ma'lumotlarida o‘qitilgan production ML model emas.
+
+Kelajakda real tarixiy ma'lumotlar orqali ML model o‘qitiladi va faqat baseline'dan yaxshiroq natija bersa ishlatiladi.
+
+## Yo‘lovchi interfeysi
+
+Oddiy `73%` ko‘rsatish o‘rniga:
+
+- 🟢 Bo‘sh joy ko‘p
+- 🟢 O‘rindiq topilishi mumkin
+- 🟡 O‘rtacha
+- 🟠 Tiqilinch
+- 🔴 Juda tiqilinch / To‘la
+
+Kelajakdagi muhim funksiya:
+
+> **Hozir o‘rtacha — sizning bekatingizga kelganda tiqilinch bo‘lishi kutilmoqda.**
+
+## Validatsiya
+
+TrackBus alohida o‘lchaydi:
+
+- YOLO odamni ko‘rdimi?
+- tracker IDni saqladimi?
+- yakuniy IN/OUT hodisasi to‘g‘rimi?
+
+Aniqlik manual belgilangan video, boshqariladigan sinovlar va mavjud APC ma'lumotlari bilan tekshiriladi. Driver crowd labels ham qo‘shimcha reference signal bo‘lishi mumkin.
+
+## Maxfiylik va xavfsizlik
+
+- yuzni tanish yo‘q;
+- biometrik identifikatsiya yo‘q;
+- safarlar orasida odamni kuzatish yo‘q;
+- faqat vaqtinchalik anonim track ID;
+- edge ishlatilganda raw video odatda avtobusning o‘zida qoladi;
+- TrackBus tormoz, rul yoki boshqa safety-critical tizimlarni boshqarmaydi.
+
+## Keyingi bosqich
+
+**Agar operatorlarda mavjud kamera yozuvlari bo‘lsa:** kichik sample olish, kalibrlash, manual ground truth yaratish va mavjud kameralar yetarliligini o‘lchash.
+
+**Agar mos video bo‘lmasa:** taxminan 2 ta avtobusda kichik controlled pilot orqali kunduz/tun, bo‘sh/tiqilinch holatlar va mobil tarmoq sifatini yig‘ish.
+
+Asosiy maqsad hozir city-wide deployment emas. Asosiy maqsad — **real ma'lumot bilan TrackBusni isbotlash va eng to‘g‘ri texnik arxitekturani tanlash**.
+
+## Branchlar
+
+| Branch | Vazifasi | Holati |
+| --- | --- | --- |
+| `main` | Integratsiyalashgan TrackBus MVP | **Asosiy branch** |
+| `agent/trackbus-foundation` | `main`ga merge qilingan platforma foundation development tarixi | Reference / tarixiy |
+| `feature/trackbus-v0.2.1-event-stability` | CV event stability va calibration/evaluation tadqiqoti | Research |
+| `feature/trackbus-v0.2-multiview` | Multi-view detection eksperimenti | Research |
+| `feature/trackbus-v0.1.2` | Oldingi YOLO + ByteTrack prototipi | Tarixiy |
+| `develop` | Dastlabki scaffold va roadmap | Tarixiy |
+
+**Start here:** `main`.
