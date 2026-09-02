@@ -1,0 +1,17 @@
+services:
+  analytics-api:
+    build: ../services/analytics-api
+    ports:
+      - "8000:8000"
+    environment:
+      TRACKBUS_DATABASE_PATH: /app/data/trackbus.sqlite3
+    volumes:
+      - analytics-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  analytics-data:

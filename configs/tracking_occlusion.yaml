@@ -1,0 +1,8 @@
+# Experimental brief-occlusion profile. A bounded buffer avoids indefinite ghosts.
+tracker_type: bytetrack
+track_high_thresh: 0.20
+track_low_thresh: 0.05
+new_track_thresh: 0.25
+track_buffer: 75
+match_thresh: 0.85
+fuse_score: true

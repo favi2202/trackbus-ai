@@ -1,0 +1,59 @@
+# Explicit detector-only comparisons. This is intentionally not a large
+# Cartesian product. Remove expensive runs when testing on CPU.
+version: 1
+device: auto
+maximum_runs: 8
+low_confidence_threshold: 0.35
+ground_truth_iou_threshold: 0.50
+stability_iou_threshold: 0.10
+edge_margin_pixels: 2
+
+runs:
+  - name: nano-640-floor-010
+    model: yolo11n.pt
+    image_size: 640
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: nano-960-floor-010
+    model: yolo11n.pt
+    image_size: 960
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: small-640-floor-010
+    model: yolo11s.pt
+    image_size: 640
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: small-960-floor-010
+    model: yolo11s.pt
+    image_size: 960
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: small-1280-floor-010
+    model: yolo11s.pt
+    image_size: 1280
+    detector_floor: 0.10
+    preprocessing_profile: none
+
+  - name: small-960-floor-005
+    model: yolo11s.pt
+    image_size: 960
+    detector_floor: 0.05
+    preprocessing_profile: none
+
+  - name: small-960-floor-015
+    model: yolo11s.pt
+    image_size: 960
+    detector_floor: 0.15
+    preprocessing_profile: none
+
+  # Opt-in preprocessing comparison. Keep it only for genuinely dark footage.
+  - name: small-960-floor-010-low-light
+    model: yolo11s.pt
+    image_size: 960
+    detector_floor: 0.10
+    preprocessing_profile: low_light

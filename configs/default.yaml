@@ -1,0 +1,114 @@
+# Coordinates are normalized: [0, 0] is the top-left and [1, 1] is the
+# bottom-right of any video resolution. Adjust these polygons for the camera.
+model:
+  path: yolo11n.pt
+  # YOLO keeps weak observations for ByteTrack; confidence remains the
+  # high-confidence reference used by diagnostics and legacy configurations.
+  confidence: 0.35
+  detector_floor: 0.10
+  imgsz: 640
+  # FP16 is enabled only on a supported CUDA device; CPU safely disables it.
+  precision: fp32
+
+device: auto
+capacity: 40
+initial_occupancy: 0
+logging_level: INFO
+
+tracking:
+  tracker: configs/bytetrack_trackbus.yaml
+  minimum_zone_frames: 3
+  minimum_origin_zone_frames: 3
+  minimum_destination_zone_frames: 3
+  maximum_transition_gap_frames: 15
+  event_cooldown_frames: 30
+  zone_anchor: bottom_center
+  zone_boundary_hysteresis: 0.0
+  stale_track_timeout: 90
+  # Experimental TrackBus-level ID continuity. Disabled until a calibrated
+  # tracking/event benchmark shows it improves this camera without false merges.
+  continuity:
+    enabled: false
+    max_gap_frames: 3
+    max_centroid_distance: 0.08
+    minimum_iou: 0.05
+    maximum_size_ratio: 1.8
+    minimum_direction_cosine: -0.25
+    minimum_match_score: 0.55
+
+# All camera-calibration coordinates are normalized against the source frame.
+# detection_roi is a deprecated v0.1 compatibility key. Named views are cropped
+# independently, translated to source coordinates, and fused before tracking.
+camera:
+  detection_roi: null
+  inference_views:
+    - name: full
+      bounds: [0.00, 0.00, 1.00, 1.00]
+      enabled: true
+  doorway_lanes:
+    anchor: center
+    left_lane: null
+    center_lane: null
+    right_lane: null
+  # Optional intended path used by doorway occupancy/overlap diagnostics.
+  crossing_corridor: null
+  # Use only for known static structures, never passenger pathways.
+  exclusion_polygons: []
+  debug_calibration_overlay: false
+
+diagnostics:
+  nearby_distance_normalized: 0.12
+  heavy_overlap_iou: 0.50
+  id_restart_window_frames: 15
+  id_restart_distance_normalized: 0.08
+  edge_margin_pixels: 2
+  stationary_step_threshold: 0.005
+  likely_static_minimum_frames: 75
+  likely_static_minimum_percentage: 0.90
+  wide_box_aspect_ratio: 0.90
+  wide_box_doorway_ratio: 0.45
+  multi_lane_minimum_box_overlap: 0.05
+  # These frame-level CSV files can be large and are disabled by default.
+  export_detection_csv: false
+  debug_visualization: false
+  trajectory_length: 30
+  # Local evidence collection is opt-in. Metadata is written by default;
+  # source frames require a second explicit opt-in and remain bounded.
+  failure_mining:
+    enabled: false
+    output_jsonl: null
+    capture_frames: false
+    frames_directory: null
+    maximum_records: 500
+    maximum_captured_frames: 50
+    jpeg_quality: 85
+    low_confidence_threshold: null
+    short_track_maximum_frames: 5
+    sudden_detection_drop_ratio: 0.50
+
+detection_fusion:
+  method: nms
+  iou_threshold: 0.50
+  confidence_strategy: maximum
+  prefer_full_frame: false
+
+zones:
+  outside:
+    - [0.05, 0.05]
+    - [0.95, 0.05]
+    - [0.95, 0.40]
+    - [0.05, 0.40]
+  inside:
+    - [0.05, 0.60]
+    - [0.95, 0.60]
+    - [0.95, 0.95]
+    - [0.05, 0.95]
+
+outputs:
+  video: data/output/result.mp4
+  # Null paths are derived from the output video name.
+  events_csv: null
+  summary_json: null
+  raw_detections_csv: null
+  fused_detections_csv: null
+  tracks_csv: null

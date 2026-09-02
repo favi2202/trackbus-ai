@@ -1,0 +1,34 @@
+[
+  {
+    "schemaVersion": "1.0",
+    "eventId": "sample-1001",
+    "observedAt": "2026-07-18T17:28:12+05:00",
+    "source": "apc",
+    "busId": "BUS-2204",
+    "routeId": "22",
+    "stopId": "CHORSU",
+    "doorId": "DOOR-1",
+    "boardings": 12,
+    "alightings": 3,
+    "occupancy": 66,
+    "capacity": 72,
+    "confidence": 0.96,
+    "qualityFlags": ["synthetic_demo"]
+  },
+  {
+    "schemaVersion": "1.0",
+    "eventId": "sample-1002",
+    "observedAt": "2026-07-18T17:29:50+05:00",
+    "source": "vision",
+    "busId": "BUS-2205",
+    "routeId": "22",
+    "stopId": "NAVOI",
+    "doorId": "DOOR-1",
+    "boardings": 8,
+    "alightings": 5,
+    "occupancy": 56,
+    "capacity": 72,
+    "confidence": 0.94,
+    "qualityFlags": ["synthetic_demo"]
+  }
+]

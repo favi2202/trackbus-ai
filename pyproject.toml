@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trackbus-ai"
+version = "0.2.1"
+description = "Vendor-neutral transport intelligence and anonymous passenger counting"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    "opencv-python>=4.10,<5",
+    "PyYAML>=6,<7",
+    # Required by Ultralytics ByteTrack linear assignment on a clean install.
+    "lap>=0.5.12,<1",
+    # ByteTrack uses a wrapped internal API verified by adapter contract tests.
+    "ultralytics==8.4.95",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2,<9",
+    "ruff>=0.6,<1",
+]
+
+[project.scripts]
+trackbus = "trackbus.main:main"
+trackbus-showcase = "showcase:main"
+
+[tool.setuptools]
+py-modules = ["showcase"]
+
+[tool.setuptools.packages.find]
+include = ["trackbus*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+extend-exclude = [".sites-runtime", "node_modules", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

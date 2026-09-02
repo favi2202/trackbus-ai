@@ -1,0 +1,45 @@
+# Camera-specific v0.2.1 event-stability calibration for bus_door_02.mp4.
+
+tracking:
+  tracker: configs/bytetrack_trackbus.yaml
+  minimum_zone_frames: 3
+  minimum_origin_zone_frames: 3
+  minimum_destination_zone_frames: 3
+  maximum_transition_gap_frames: 15
+  event_cooldown_frames: 30
+  zone_anchor: center
+  zone_boundary_hysteresis: 0.0
+  stale_track_timeout: 90
+camera:
+  inference_views:
+    - {name: full, bounds: [0.0, 0.0, 1.0, 1.0], enabled: true}
+  crossing_corridor:
+    - [0.24, 0.20]
+    - [0.76, 0.20]
+    - [0.76, 0.98]
+    - [0.24, 0.98]
+detection_fusion:
+  method: nms
+  iou_threshold: 0.50
+  confidence_strategy: maximum
+  prefer_full_frame: false
+model:
+  path: yolo11s.pt
+  confidence: 0.15
+  imgsz: 960
+  precision: fp32
+device: cuda
+
+zones:
+  inside:
+    - [0.24, 0.20]
+    - [0.76, 0.20]
+    - [0.76, 0.56]
+    - [0.24, 0.56]
+
+  outside:
+    - [0.24, 0.59]
+    - [0.76, 0.59]
+    - [0.76, 0.98]
+    - [0.24, 0.98]
+outputs: {video: data/output/baseline_full_frame_cpu.mp4}
