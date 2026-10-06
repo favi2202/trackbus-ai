@@ -1,33 +1,24 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import "./pitch.css";
+import { pitchConfig } from "@/lib/pitch-config";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://trackbus-showcase.favi.workers.dev"),
-  title: "TrackBus Showcase | Transport intelligence",
+  metadataBase: new URL(pitchConfig.siteUrl),
+  title: "TrackBus AI — Transport Intelligence",
   description:
-    "Pilot-ready passenger counting, occupancy forecasting, and operator decision intelligence for Tashkent transport.",
+    "AI-powered passenger-flow intelligence for smarter public transport operations. Explore the working MVP and planned pilot.",
   openGraph: {
-    title: "TrackBus Showcase | Transport intelligence",
-    description: "Anonymous counts become auditable transport decisions.",
+    title: "TrackBus AI — Transport Intelligence",
+    description: "Turn passenger flow into better transport decisions. Working MVP / research prototype.",
     type: "website",
-    images: [{ url: "/og.png", width: 1672, height: 941, alt: "TrackBus transport intelligence showcase" }],
+    images: [{ url: "/pitch-og.png", width: 1200, height: 630, alt: "TrackBus AI: passenger flow, better transport decisions. MVP / Research Prototype." }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "TrackBus Showcase | Transport intelligence",
-    description: "Anonymous counts become auditable transport decisions.",
-    images: ["/og.png"],
+    title: "TrackBus AI — Transport Intelligence",
+    description: "AI-powered passenger-flow intelligence for smarter public transport operations.",
+    images: ["/pitch-og.png"],
   },
   icons: {
     icon: "/favicon.svg",
@@ -43,9 +34,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         {children}
       </body>
     </html>
