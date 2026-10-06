@@ -1,6 +1,9 @@
 export type Language = "en" | "uz" | "ru";
 
 const english = {
+  pitchHome: "TrackBus pitch",
+  researchPrototype: "MVP / Research Prototype",
+  demoGuide: "Demo guide",
   language: "Language",
   commandCenter: "Command center",
   livePilot: "Live pilot",
@@ -305,6 +308,9 @@ type TranslationKey = keyof typeof english;
 type TranslationSet = { [Key in TranslationKey]: string };
 
 const uzbek: TranslationSet = {
+  pitchHome: "TrackBus taqdimoti",
+  researchPrototype: "MVP / Tadqiqot prototipi",
+  demoGuide: "Demo qo‘llanma",
   language: "Til",
   commandCenter: "Boshqaruv markazi",
   livePilot: "Jonli pilot",
@@ -606,6 +612,9 @@ const uzbek: TranslationSet = {
 };
 
 const russian: TranslationSet = {
+  pitchHome: "Презентация TrackBus",
+  researchPrototype: "MVP / Исследовательский прототип",
+  demoGuide: "О демонстрации",
   language: "Язык",
   commandCenter: "Центр управления",
   livePilot: "Пилот онлайн",
